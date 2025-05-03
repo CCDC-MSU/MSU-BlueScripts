@@ -1,1 +1,186 @@
-# TO-DO start the windows checklist
+Phase 0: Pre-Computation & Preparation (Before Connecting)
+    Compile Asset Inventory & Intel:
+        List assigned Windows machine IPs, hostnames, and roles (Standard Server, AD DC, DNS Server, Web Server, etc.). Identify the Domain Controller(s).
+        Maintain the definitive list of all valid Domain usernames and groups, noting roles (Domain Admins, Server Admins, regular users).
+        Have a list of expected local administrator accounts (should ideally be minimal/standardized).
+        Note expected standard services for Windows Server roles (AD DS, DNS, IIS, etc.).
+    Prepare Secure Credentials:
+        Generate/store strong, unique passwords for:
+            The Domain Administrator account (if applicable).
+            Other privileged domain accounts (Enterprise Admins, Schema Admins).
+            The built-in local Administrator account on all machines.
+            Any other valid local or domain admin accounts.
+            Consider using a tool/strategy like LAPS (Local Administrator Password Solution) if allowed/deployable for local admin passwords.
+    Gather Tools & Resources:
+        Stage essential tools: Sysinternals Suite (especially Autoruns, Process Explorer, TCPView, PsExec/PsTools), PowerSploit/BloodHound (for AD recon if allowed by rules), maybe NirSoft tools, known good AV definitions. Have verified download links.
+        Have playbooks/checklists accessible.
+        Bookmark Scoreboard/Communication platforms.
+    Understand Network Constraints:
+        Internalize the "do not block" firewall rules (main.txt). Note required ports for AD replication, DNS, etc. (See Microsoft documentation).
+    Prepare Basic Incident Response Plan:
+        Define team roles (Event log watcher, Responder).
+        Outline basic containment steps (disable user, block IP via Firewall, disconnect network).
+
+Phase 1: Immediate Triage & Control Seizure (Critical First Actions)
+    Goal: Gain highest administrative control, eject active intruders, secure privileged accounts.
+    Secure Connection: Connect via RDP (or console if possible).
+    Obtain Privileges: Log in with provided credentials; escalate to Local Administrator or Domain Administrator immediately if necessary.
+    Change Privileged Passwords: Immediately change passwords for:
+        The account you logged in with (if admin).
+        The built-in local Administrator account on the current machine.
+        The Domain Administrator account (if on the DC or have domain admin rights).
+        The krbtgt account password (requires Domain Admin, perform twice – crucial for Kerberos security).
+        Identify Active Sessions: Check who is logged in (query user or Task Manager -> Users).
+        Identify Running Processes: Use Task Manager (Details view), Process Explorer (procexp.exe), or tasklist. Look for suspicious processes, unusual user contexts, high resource usage.
+        Terminate Unauthorized Sessions & Processes: Forcefully log off suspicious remote/local sessions (logoff <SessionID>). Terminate unauthorized/malicious processes (Task Manager, taskkill /F /PID <PID>, Process Explorer).
+        Quick Event Log Audit: Briefly check the Windows Security Event Log for recent successful (4624) and failed (4625) logins. Look for suspicious usernames, source workstations/IPs, or brute-force patterns. Check System log for unexpected service stops/starts or errors.
+
+Phase 2: User & Group Account Audit and Sanitization (Local & Domain)
+    Goal: Ensure only authorized identities exist with least privilege.
+    Full User Account Enumeration:
+    Local: List all local user accounts (net user, Get-LocalUser).
+    Domain (on DC/member server): List all domain user accounts (Active Directory Users and Computers - ADUC, Get-ADUser -Filter *). Pay attention to OU structure.
+    Validate Against Known Users: Compare system lists against your official list of valid domain/local users. Identify all discrepancies.
+    Audit Privileged Group Memberships: CRITICAL.
+    Local (on EACH machine): Administrators, Remote Desktop Users (net localgroup Administrators, etc.).
+    Domain (on DC): Domain Admins, Enterprise Admins, Schema Admins, Administrators (built-in), Account Operators, Server Operators, Backup Operators, DNSAdmins (Get-ADGroupMember, ADUC).
+    Remove any unauthorized or unnecessary members from these groups. Apply least privilege principle.
+    Check for Default/Guest Accounts: Ensure the built-in Guest account (local & domain) is disabled. Rename the built-in Administrator account (local & domain).
+    Verify Password Status: Check for accounts with empty passwords or passwords that never expire (local policies, AD user attributes). Check for accounts configured with reversible password encryption.
+    Sanitize Accounts:
+        Remove Unauthorized: Delete confirmed unauthorized local/domain accounts.
+        Disable Suspicious/Unused: Disable accounts you are unsure about, service accounts not currently needed, or users temporarily locked out. Do NOT delete default privileged accounts (like Administrator), just rename and disable if possible.
+        Audit Local Admin Groups: On all servers, ensure only authorized domain groups (e.g., "Server Admins") and minimal necessary local accounts are members of the local Administrators group.
+
+Phase 3: Securing Valid Accounts & Policies (Local & Domain GPO)
+    Goal: Ensure authorized accounts have strong credentials & policies enforced.
+    Reset ALL Valid User Passwords: Force password changes for every remaining valid user (local and domain). Use strong, unique passwords.
+    Force Password Change at Next Login: Configure for all valid users (local policy, AD user properties).
+    Configure Strong Password Policies (GPO):
+        Enforce Complexity, Minimum Length (e.g., 12+ characters), History (e.g., 24 passwords), Minimum/Maximum Age.
+        Apply via Default Domain Policy (for domain accounts) and Local Security Policy (for local accounts, potentially overridden by GPO).
+    Configure Account Lockout Policies (GPO):
+        Set Lockout Threshold (e.g., 5 invalid attempts), Lockout Duration, Reset counter after duration. Helps mitigate brute-force.
+        Secure Local Administrator Account: Ensure it's renamed, has a very strong password, and consider disabling it if a separate admin account exists (can be enabled if needed). Implement LAPS if possible.
+
+Phase 4: Securing Remote Access & Network Services
+    Goal: Harden common entry points like RDP, SMB, WinRM.
+    Audit & Harden Remote Desktop Protocol (RDP):
+        Enable Network Level Authentication (NLA).
+        Restrict RDP access to specific authorized users/groups (via System Properties -> Remote or GPO). Do not allow Administrators group by default if possible.
+        Change the default RDP port (security by obscurity, but can help).
+        Use strong encryption levels (GPO).
+    Audit & Harden Server Message Block (SMB)/File Shares:
+        Disable SMBv1 (critical vulnerability).
+        Review all file shares (net share, Get-SmbShare). Remove unnecessary shares.
+        Verify share permissions (Share-level and NTFS-level). Apply least privilege. Ensure 'Everyone' is not overused.
+        Enable SMB Encryption if possible/needed.
+        Disable administrative shares (C$, ADMIN$) if policy allows (can break some tools).
+        Audit & Harden Windows Remote Management (WinRM)/PowerShell Remoting:
+        Review WinRM listeners (winrm enumerate winrm/config/listener).
+        Restrict access via network configuration or firewall rules.
+        Ensure HTTPS transport is used if possible.
+        Review PowerShell Remoting endpoint configurations (Get-PSSessionConfiguration).
+
+Phase 5: Initial Persistence & Integrity Sweep
+    Goal: Uncover common adversary persistence mechanisms and malware.
+    Run Autoruns (autoruns.exe / autorunsc.exe): CRITICAL TOOL.
+    Scan all locations (Logon, Services, Scheduled Tasks, Drivers, DLLs, WMI, etc.).
+    Carefully investigate unsigned entries, suspicious paths, entries in temp locations, unknown publishers.
+    Verify image paths for services and drivers.
+    Use "Hide Microsoft Entries" and "Verify Code Signatures" options. Compare against known good baselines if possible. Disable/Delete suspicious entries.
+    Check Scheduled Tasks (schtasks.exe /query /v /fo LIST, Task Scheduler GUI): Look for suspicious tasks (unusual names, paths, triggers, user contexts, actions like running powershell/cscript).
+    Check Services (services.msc, sc query type= service state= all, Get-Service): Look for unusual services, suspicious descriptions, non-standard ImagePaths, services running as LocalSystem/Admin with strange executables, disabled services that should be running (AV!).
+    Check Registry Run Keys: HKLM & HKCU Software\Microsoft\Windows\CurrentVersion\Run, RunOnce, RunOnceEx, Policies\Explorer\Run.
+    Check Startup Folders: System-wide and user-specific startup folders.
+    Check WMI Persistence (Get-WMIObject -Namespace root\subscription ...): Look for __EventFilter, __EventConsumer, __FilterToConsumerBinding instances used for persistence.
+    Check Installed Software (appwiz.cpl, Get-WmiObject -Class Win32_Product): Look for unauthorized or suspicious software installations.
+    Scan for Malware: Ensure Windows Defender (or other AV) is running, updated, and perform a full system scan.
+
+Phase 6: Foundational Security, Network Lockdown & Initial Detection Setup
+    Goal: Establish baseline controls - Firewall, Updates, Service Management, critical Auditing/Detection.
+    Configure Windows Defender Firewall:
+        Ensure Firewall is Enabled for Domain, Private, and Public profiles.
+        Set Default Deny for inbound connections.
+        Configure Allow Rules only for necessary traffic based on server role (AD ports, DNS, RDP, Web, etc.). Be specific with ports, protocols, and source IPs where possible.
+        Implement the "do not block" rules from main.txt.
+        Review Outbound Rules. Consider Default Deny for outbound if feasible, allowing only necessary traffic (DNS, Updates, Scoreboard, Artifacts, etc.). Crucial for blocking C2.
+    Enable Logging: Log dropped (and optionally successful) packets for all profiles.
+    Apply Critical Security Updates: Use Windows Update to check for and install missing security patches, especially critical/exploitable ones (e.g., recent Print Spooler, RDP vulns).
+    Disable Unnecessary Services: Systematically stop and disable services not required for the scored functionality (e.g., Print Spooler on DC, Fax service, etc.).
+    Enable Critical Security Auditing (via GPO or Local Policy):
+    Logon Events: Success/Failure (4624, 4625).
+    Account Logon: Kerberos/NTLM Success/Failure.
+    Account Management: User/Group creation, deletion, modification Success/Failure (e.g., 4720, 4722, 4728, 4732, 4738).
+    Policy Change: Audit Policy Change Success/Failure.
+    Process Creation: Success (Event ID 4688 - Enable Command Line Auditing via GPO).
+    Object Access: Audit File System / Registry access (configure SACLs later if needed).
+    Privilege Use: Sensitive Privilege Use Success/Failure.
+    (Recommended) Install & Configure Sysmon: If allowed, install Sysmon for highly detailed telemetry (process creation with hashes, network connections, registry changes, etc.). Use a good baseline configuration (e.g., SwiftOnSecurity's).
+
+Phase 7: Deeper Hardening & Monitoring Configuration
+    Goal: Refine security posture using GPOs, enhance logging, secure services.
+    Apply Security Templates/Baselines: Use GPOs to apply security settings based on recognized benchmarks (CIS, DISA STIG - adapt for CCDC context). Or use secedit /configure with a baseline .inf file.
+    Configure User Rights Assignment (GPO): Restrict sensitive rights like "Act as part of the operating system", "Debug programs", "Log on as a batch job", "Log on as a service", "Take ownership". Ensure RDP/local logon rights are restricted.
+    Harden Specific Services:
+    IIS (if applicable): Remove unused modules, configure request filtering, set secure headers, run AppPools as low-privilege accounts.
+    Apply to any other scored services (SQL Server, etc.).
+    PowerShell Hardening (GPO):
+        Enable Module Logging.
+        Enable Script Block Logging.
+        Enable PowerShell Transcription.
+        Consider Constrained Language Mode if full PowerShell isn't needed for administration.
+    Enhanced Audit Policies: Configure Advanced Audit Policies via GPO for more granular control. Set up SACLs (System Access Control Lists) on critical files/registry keys/AD objects to log access attempts.
+    Filesystem & Permission Hardening: Review NTFS permissions on critical system directories and files. Check C:\Windows\System32 for unusual files.
+
+Phase 8: Active Directory & DNS Specific Hardening (On DC/Relevant Servers)
+    Goal: Secure the core identity and naming infrastructure.
+    Re-Audit Privileged AD Groups: Again, meticulously verify membership in Enterprise Admins, Schema Admins, Domain Admins, Administrators, Account Operators, Server Operators, Backup Operators, DNSAdmins. Enforce minimal membership.
+    Secure Service Accounts:
+        Audit accounts used for services. Use Group Managed Service Accounts (gMSA) if possible.
+        Review Kerberos Constrained/Unconstrained Delegation settings on user/computer accounts. Minimize unconstrained delegation.
+        Review Service Principal Names (SPNs) for potential misuse (setspn -Q */*).
+    Review AD OU Structure & Delegation: Ensure OU structure is logical and delegation of control follows least privilege. Limit who can link GPOs or create/modify user accounts/groups.
+    Secure Group Policy Objects (GPOs): Review permissions on GPOs themselves. Ensure only authorized admins can modify critical policies (like Default Domain Policy, Default Domain Controllers Policy).
+    Monitor AD Replication: Use repadmin /showrepl and Event Logs (Directory Service, DFS Replication) to ensure replication is healthy.
+    Harden DNS Server:
+        Restrict Zone Transfers to specific authorized servers.
+        Configure Secure Dynamic Updates (or disable if not needed).
+        Enable DNS Cache Locking (% based).
+        Enable DNS Socket Pool (helps against cache poisoning).
+        (Advanced) Consider DNSSEC signing for zones if required/feasible.
+        Check DNS Admins group membership.
+    Enable AD Recycle Bin: If forest functional level allows, enable it to recover accidentally deleted objects.
+    Review Kerberos Policies (GPO): Check max ticket age, renewal age, clock skew tolerance.
+    KRBTGT Password Reset: Ensure the krbtgt account password was reset twice with a strong password (invalidates existing Kerberos tickets).
+
+Phase 9: Ongoing Monitoring, Response & CDC Operations
+    Goal: Maintain situational awareness, actively hunt, ensure service uptime, score points.
+    Continuous Event Log Monitoring (Real-Time):
+    Actively Watch Key Logs: Dedicate monitoring (wevtutil qe /f:text /c:1 /rd:true, PowerShell Get-WinEvent -LogName ... -MaxEvents 1 -Oldest, Event Viewer) to Security, System, Application, PowerShell, DNS Server, Directory Service, Sysmon logs.
+    Look For: Indicators from Phase 6 Auditing (logon failures/successes, account/group changes, process creation, policy changes), plus specific Event IDs related to services stopping, application errors, DNS errors, AD replication issues, suspicious PowerShell activity (Script Block Logging Event ID 4104). Filter effectively.
+    Continuous Network Traffic Monitoring:
+    Actively Review Connections: Periodically run netstat -ano | findstr ESTABLISHED (or TCPView) to check active connections. Investigate unknown destinations/ports.
+    Monitor Firewall Logs: Check for denied packets and potentially unexpected allowed traffic.
+    Continuous Process & Activity Monitoring:
+    Periodically re-check Task Manager / Process Explorer for suspicious processes.
+    Review query user for unexpected sessions.
+    Periodic Baseline Comparison & Re-Checks:
+    Establish Baselines: After initial hardening, save outputs (tasklist, netstat -ano, net localgroup Administrators, AD group memberships, schtasks /query, service states, critical file/registry hashes).
+    Re-Run Checks Periodically: Compare current state against baseline using diff tools or manual comparison to detect unauthorized changes. Re-run Autoruns periodically or use its comparison feature.
+    Incident Response Documentation: Document all actions meticulously. Use official IR forms.
+    Team Coordination: Constant communication.
+    Scoring Awareness: Regularly check scoreboard; ensure services (AD Auth, DNS resolution, RDP access, etc.) are operational.
+    Phase 10: Incident Response Readiness & Execution
+    Goal: React swiftly and effectively when monitoring detects an incident.
+    Activate Roles: Designated team members watch logs/alerts and execute responses.
+    Execute Containment: Use pre-defined actions:
+    Kill malicious processes (taskkill).
+    Disable compromised user accounts (ADUC, Disable-ADAccount).
+    Log off malicious sessions (logoff).
+    Block malicious source IPs via Windows Firewall.
+    Isolate host network using Firewall rules or disconnecting NIC (coordinate).
+    Investigate & Eradicate: Identify root cause, remove persistence (Tasks, Services, Registry), delete malware, reset compromised credentials (including krbtgt again if suspected domain compromise).
+    Recover & Post-Incident: Change passwords, patch, restore clean configurations, re-enable services/users cautiously. Document fully.
+
+# TO-DO COMPLETE THE WINDOWS CHECKLIST
