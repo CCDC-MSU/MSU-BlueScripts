@@ -1,0 +1,158 @@
+CCDC Linux Hardening Checklist
+
+Phase 0: Pre-Computation & Preparation (Before Connecting)
+    Compile Asset Inventory & Intel:
+        List assigned Linux machine IPs, hostnames, roles/services.
+        Maintain the definitive list of valid admin/normal usernames.
+        Note expected standard users, groups, services for OS/role (Identify anomalies).
+
+    Prepare Secure Credentials:
+        Generate/store strong, unique passwords for root and all valid admin accounts.
+        Prepare team SSH keys if planning key-based authentication.
+
+    Gather Tools & Resources:
+        Stage essential tools/scripts (hardening scripts, Lynis, OpenSCAP, pspy, Snoopy, FIM tools) or have verified download URLs.
+        Have playbooks/checklists readily accessible.
+        Bookmark Scoreboard/Communication platforms.
+        List critical resource URLs (AV, guides, repos).
+
+    Understand Network Constraints:
+        Internalize the "do not block" firewall rules.
+
+    Prepare Basic Incident Response Plan:
+        Outline basic containment steps (kill process, disable user, block IP).
+
+Phase 1: Immediate Triage & Control Seizure (Critical First Actions)
+    Goal: Gain administrative control, eject active intruders, secure the root account.
+    Secure Connection: Connect via SSH.
+    Obtain Root Privileges: Gain root access (sudo).
+    Change Root Password: Immediately secure root with a pre-generated strong password.
+    Identify Active User Sessions: Check who is logged in (w, who).
+    Identify All Running Processes: Snapshot processes, parent/child relations, user context (ps auxf, pstree -p).
+    Terminate Unauthorized Activity: Forcefully kill sessions/processes (pkill, skill, kill -9) linked to unauthorized users or identified malicious activity.
+    Quick Login Audit: Review recent logins (last, lastb, /var/log/auth.log) for suspicious usernames/source IPs.
+    System Identification: Note OS variant, version, kernel (uname -a, cat /etc/os-release). Identify package manager.
+
+Phase 2: User & Group Account Audit and Sanitization
+    Goal: Ensure only authorized identities exist and have least privilege.
+    Full User Account Enumeration: List all local accounts (/etc/passwd).
+    Validate Against Known Users: Compare against official user lists; identify all discrepancies.
+    Check for UID 0 Backdoors: Find any non-root accounts with UID 0.
+    Audit Group Memberships & Privileges: List groups; scrutinize privileged group membership; remove valid users from unnecessary groups.
+    Audit Sudo Privileges: Analyze /etc/sudoers and /etc/sudoers.d/ (visudo); ensure only valid admins have appropriate rights; remove unauthorized/overly permissive entries. Consider Defaults requiretty.
+    Verify Password Status: Check for empty/weak passwords (/etc/shadow).
+    Sanitize Accounts:
+        Remove Unauthorized: Delete confirmed unauthorized accounts (userdel -r).
+        Lock Suspicious/Unused: Lock unknown/unneeded accounts (passwd -l, set shell to /sbin/nologin).
+        Remediate UID 0: Fix or remove non-root UID 0 accounts.
+        Verify User Shell Configuration: Ensure appropriate shells (interactive vs. nologin).
+
+    (Optional/Later) Implement RBash: Consider changing shells for normal users to restricted bash (rbash.sh).
+
+Phase 3: Securing Remaining Valid Accounts
+    Goal: Ensure all authorized user accounts have strong, uncompromised credentials.
+    Reset ALL Valid User Passwords: Force password changes for every remaining valid user.
+    Force Password Change at Next Login: Enforce change for all valid users (chage -d 0).
+    (Optional/Later) Enforce Password Policies: Configure PAM and /etc/login.defs for complexity, history, aging, lockouts.
+
+Phase 4: Securing Remote Access (SSH)
+    Goal: Harden the primary remote administration vector.
+    Audit SSH Daemon Configuration (/etc/ssh/sshd_config): Backup, then review & modify.
+        Disable Root Login (PermitRootLogin no).
+        Use Protocol 2 Only (Protocol 2).
+        Restrict User Access (AllowUsers/AllowGroups - explicitly list valid users/groups only).
+        Disable Empty Passwords (PermitEmptyPasswords no).
+        Disable Password Authentication (PasswordAuthentication no - if using keys).
+        Check/Restrict Port.
+        Review/Harden Other Settings (Forwarding, Tunneling, MaxAuthTries, etc.).
+        (Advanced) Use Strong Ciphers/MACs/KexAlgorithms.
+    Audit SSH Authorized Keys: Check ~/.ssh/authorized_keys for root and all valid users. Remove any unauthorized keys.
+    Verify SSH Host Keys: Check integrity/timestamps of /etc/ssh/ssh_host_*_key files.
+    Apply & Test SSH Changes: Restart sshd. Test login from a separate terminal BEFORE disconnecting.
+
+Phase 5: Initial Persistence & Integrity Sweep
+    Goal: Uncover common adversary persistence mechanisms and unauthorized modifications.
+    Check Startup & Scheduled Execution:
+        Cron (System & ALL user crontabs).
+        Shell Initialization Files (System-wide & ALL user profiles).
+        Systemd/Init Services (System & user units).
+        Temporary Directories (/tmp, /var/tmp, /dev/shm).
+        Legacy Startup (/etc/rc.local).
+    Check for SUID/SGID Misuse: Find & investigate unusual SUID/SGID files. Remove suspicious bits (chmod a-s).
+    Check for Immutable/Append-Only Files: Use lsattr to find; chattr -i/-a to fix malicious usage.
+    Verify Package Manager Integrity: Check repository configurations for suspicious sources. (Optional: dpkg --verify, rpm -Va).
+    Check Network Configuration Files: /etc/hosts, /etc/resolv.conf, /etc/nsswitch.conf.
+    Check Dynamic Linker: /etc/ld.so.preload, /etc/ld.so.conf*.
+    Check Kernel Modules: lsmod, /etc/modprobe.d/.
+    Check for Hidden Files/Processes: ls -la.
+    (Optional/Later) Rootkit Scan: chkrootkit, rkhunter.
+
+Phase 6: Foundational Security, Network Lockdown & Initial Detection Setup
+    Goal: Establish baseline controls, secure network, enable critical logging/detection early.
+    Apply System Updates: After verifying sources (Phase 5), start updates (apt update && apt upgrade -y, etc.). Background (&). Note reboot needs.
+    Configure Host-Based Firewall:
+        Select tool (iptables, nftables, ufw).
+        Implement Default Deny (INPUT, OUTPUT, FORWARD).
+        Allow Necessary Incoming Traffic (Scored role-based, correct sources).
+        Allow Necessary Outbound Traffic (DNS, updates, scoreboard, artifacts); Implement "do not block" rules; Configure strict egress filtering where possible.
+        Enable Logging: Configure firewall to log denied (and potentially allowed) packets.
+        Disable IP Forwarding (unless router).
+        Save Rules Persistently.
+    Audit Listening Network Ports: Identify all listeners (ss -tulnp, netstat -tulnp). Stop/disable unexpected services.
+    Disable/Remove Unnecessary Services: Stop & disable non-essential services (systemctl disable --now).
+    Disable IPv6 (If Not Required): Configure via sysctl/GRUB.
+    Establish Critical Logging & Auditing:
+        Ensure system logging (syslog/rsyslog/journald) is active.
+        Install/Configure auditd: Enable rules for logins, sudo use, user/group changes, execve, critical file changes (/etc/passwd, sudoers).
+        (Recommended) Install Snoopy Command Logger: For detailed command execution logging to syslog/auth.log. Secure its configuration.
+    Deploy Automated Attack Blocking:
+        Install/Configure Fail2ban: Enable SSH jail immediately. Set low retry counts and reasonable ban times. Configure alerts/logging for bans. Consider jails for other exposed services (HTTP, etc.).
+
+Phase 7: Deeper Hardening & Monitoring Configuration
+    Goal: Refine security posture, add more detection layers, verify configuration.
+    Kernel Parameter Tuning: Apply security parameters via sysctl (/etc/sysctl.conf).
+    Application/Service-Specific Hardening: Secure Web Servers (Apache/Nginx, PHP), Databases, Squid, and any other scored services per best practices. Use ModSecurity if applicable.
+    Implement File Integrity Monitoring (FIM): Deploy and baseline Tripwire, AIDE, OSSEC, Samhain, or Wazuh after initial hardening is complete.
+    (Optional) Install Additional HIDS/HIPS: Consider tools like OSSEC/Wazuh agents if not already used for FIM.
+    (Optional) Install Anti-Virus: Install ClamAV, schedule scans, especially for mail/web roles.
+    Advanced Firewall Tuning: Refine egress rules, implement rate-limiting, consider IP reputation blocking.
+    Run Security Audits/Scans: Lynis, OpenSCAP (if applicable).
+    Filesystem & Permission Hardening: Harden /etc/fstab options, check world-writable files, check umask, find ownerless files.
+    Disable Unused Hardware/Modules: Example: Block USB storage mounting via modprobe.
+    Review System-Wide Configurations: Double-check key files (/etc/login.defs, network configs, bootloader, etc.).
+
+Phase 8: Ongoing Monitoring, Response & CDC Operations
+    Goal: Maintain situational awareness, actively hunt for threats, ensure service uptime, score points.
+    Continuous Log Monitoring (Real-Time):
+        Actively Watch Key Logs: Dedicate monitoring (tail -f, journalctl -f, multitail) to /var/log/auth.log (or equivalent), syslog, /var/log/audit/audit.log (if auditd active), Snoopy logs (if active), Fail2ban logs, and application/web server logs.
+    Look For: Failed logins, successful logins from unusual sources/times, sudo usage, user/group modifications, errors, specific attack signatures, Fail2ban bans.
+    Continuous Network Traffic Monitoring:
+        Actively Review Connections: Periodically run ss -tunap, lsof -i to check established connections and listening ports against the baseline. Investigate unknowns.
+        Monitor Firewall Logs: Check for denied packets (ingress/egress) which might indicate scanning or C2 attempts.
+        Observe Bandwidth/Flows (iftop, nethogs).
+    Continuous Process & Activity Monitoring:
+        Run pspy: Execute pspy (or similar) in the background to catch short-lived processes and cron job executions in real-time.
+        Periodically re-check running processes (ps auxf).
+    Periodic Baseline Comparison & Re-Checks:
+        Establish Baselines: After initial hardening (post Phase 7), save outputs of key checks (users, groups, ss -tulnp, ps auxf, crontabs, systemctl list-unit-files --state=enabled, critical config file hashes).
+        Re-Run Checks: Periodically (e.g., every 15-30 mins) re-run these checks and diff against the baseline to detect unauthorized changes (new users, ports, services, cron jobs).
+        Re-Audit Key Files: Specifically re-check /etc/sudoers, authorized_keys, /etc/passwd, /etc/shadow for modifications.
+    Incident Response Documentation:
+        Document all actions, findings, commands, justifications.
+        Use official IR forms promptly and accurately.
+        Team Coordination: Maintain constant communication.
+        Scoring Awareness: Check the scoreboard regularly; ensure services remain operational.
+
+Phase 9: Incident Response Readiness & Execution
+    Goal: React swiftly and effectively when monitoring detects an incident.
+    Activate Roles: Ensure team members know their IR roles (log watcher raises alert, responder contains).
+    Execute Containment: Use pre-defined actions/scripts:
+        Kill malicious processes (kill -9).
+        Disable compromised user accounts (passwd -l, chsh -s /sbin/nologin).
+        Terminate user sessions (pkill -u, skill).
+        Block malicious source IPs via firewall (iptables, ufw).
+        Isolate host network if necessary (coordinate with Firewall Admin).
+    Investigate & Eradicate: Identify the root cause (exploit, credential abuse), remove persistence mechanisms (cron, services, keys), delete malware.
+    Recover & Post-Incident: Change compromised passwords, patch vulnerability if identified, restore clean configurations, re-enable services/users cautiously. Document fully.
+
+#TO-DO REFACTOR AND COMPLETE THE LINUX CHECKLIST
