@@ -1,0 +1,53 @@
+#!/bin/bash
+
+# Define paths
+SCRIPT_DIR=$(pwd)
+UPDATE_SCRIPT="$SCRIPT_DIR/update_scan.sh"
+LOGFILE="$SCRIPT_DIR/cron.log"
+IP_FILE="$SCRIPT_DIR/IP.txt"
+SCAN_OUTPUT="$SCRIPT_DIR/scan_output.txt"
+SCAN_PREV="$SCRIPT_DIR/scan_previous.txt"
+SCAN_CURR="$SCRIPT_DIR/scan_current.txt"
+
+# Ensure the scripts are executable
+chmod +x $UPDATE_SCRIPT
+
+# Set the full path for the script in cron job
+CRON_JOB="* * * * * $UPDATE_SCRIPT >> $LOGFILE 2>&1"
+
+# Add cron job if it's not already present
+(crontab -l 2>/dev/null | grep -v "$UPDATE_SCRIPT"; echo "$CRON_JOB") | crontab -
+
+echo "Cron job set up successfully!"
+
+# Optional: Test if the cron job works by creating a test log entry
+echo "Cron job installed at $(date)" >> $LOGFILE
+
+# Start network scan setup
+userInput=""
+echo "Hello, BullDogs! Let's grab a scan of the network."
+
+# Get the current IP address of the machine
+IP=$(ip -4 addr show eth0 | grep -oP '(?<=inet\s)\d+(\.\d+){3}/\d+')
+
+echo "My IP is: $IP"
+echo "Is this correct? [yes/no]"
+read userInput
+
+if [ "$userInput" = "no" ]; then
+    read -p "Enter your IP address: " IP
+fi
+
+# Save the IP address to a file
+echo "$IP" > $IP_FILE
+
+# Create necessary files for scanning
+touch $SCAN_OUTPUT
+touch $SCAN_PREV
+touch $SCAN_CURR
+
+# Echo the setup completion
+echo "Network scan setup is complete. Cron job is scheduled to run every minute."
+
+# You can optionally add a success message here or any additional instructions
+echo "Setup completed at $(date)" >> $LOGFILE
