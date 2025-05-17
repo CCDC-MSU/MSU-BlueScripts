@@ -1,53 +1,46 @@
 #!/bin/bash
 
-# Define paths
-SCRIPT_DIR=$(pwd)
-UPDATE_SCRIPT="$SCRIPT_DIR/update_scan.sh"
-LOGFILE="$SCRIPT_DIR/cron.log"
-IP_FILE="$SCRIPT_DIR/IP.txt"
-SCAN_OUTPUT="$SCRIPT_DIR/scan_output.txt"
-SCAN_PREV="$SCRIPT_DIR/scan_previous.txt"
-SCAN_CURR="$SCRIPT_DIR/scan_current.txt"
+# to setup run the following in the terminal:
+# chmod +x LockIn.sh update_scan.sh
+# ./LockIn.sh
 
-# Ensure the scripts are executable
-chmod +x $UPDATE_SCRIPT
-
-# Set the full path for the script in cron job
-CRON_JOB="* * * * * $UPDATE_SCRIPT >> $LOGFILE 2>&1"
-
-# Add cron job if it's not already present
-(crontab -l 2>/dev/null | grep -v "$UPDATE_SCRIPT"; echo "$CRON_JOB") | crontab -
-
-echo "Cron job set up successfully!"
-
-# Optional: Test if the cron job works by creating a test log entry
-echo "Cron job installed at $(date)" >> $LOGFILE
-
-# Start network scan setup
 userInput=""
-echo "Hello, BullDogs! Let's grab a scan of the network."
+chmod +x LockIn.sh run_scan.py
 
-# Get the current IP address of the machine
-IP=$(ip -4 addr show eth0 | grep -oP '(?<=inet\s)\d+(\.\d+){3}/\d+')
+echo "Hello, BullDogs! Let's grab a scan of the network..."
+
+# Get local IP (CIDR format)
+IP=$(ip -4 -o addr show | awk '$2 != "lo" {print $4; exit}')
+
 
 echo "My IP is: $IP"
 echo "Is this correct? [yes/no]"
 read userInput
-
 if [ "$userInput" = "no" ]; then
-    read -p "Enter your IP address: " IP
+    read -p "Enter your IP address (e.g. 192.168.0.0/24): " IP
 fi
 
-# Save the IP address to a file
-echo "$IP" > $IP_FILE
+# Save IP to file
+echo "$IP" > IP.txt
 
-# Create necessary files for scanning
-touch $SCAN_OUTPUT
-touch $SCAN_PREV
-touch $SCAN_CURR
+# Create necessary files
+touch scan_output.txt
+touch scan_previous.txt
+touch scan_current.txt
+LOGFILE="scan_changes.log"
+touch "$LOGFILE"
 
-# Echo the setup completion
-echo "Network scan setup is complete. Cron job is scheduled to run every minute."
+# Script to run every minute
+TARGET_SCRIPT="./run_scan.py"
 
-# You can optionally add a success message here or any additional instructions
-echo "Setup completed at $(date)" >> $LOGFILE
+# Add cron entry if not already present
+(crontab -l 2>/dev/null; echo "* * * * * $(pwd)/$TARGET_SCRIPT") | sort -u | crontab -
+echo "Cron job scheduled. Scans will run every minute."
+
+# Run an initial scan right now
+PREV="scan_previous.txt"
+CURR="scan_current.txt"
+IP=$(cat IP.txt)
+
+python GUI.py
+echo "Initial scan complete at $(date)"
