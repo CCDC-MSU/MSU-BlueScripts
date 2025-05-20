@@ -29,7 +29,7 @@ Phase 1: Immediate Triage & Control Seizure (Critical First Actions)
         The account you logged in with (if admin).
         The built-in local Administrator account on the current machine.
         The Domain Administrator account (if on the DC or have domain admin rights).
-        The krbtgt account password (requires Domain Admin, perform twice – crucial for Kerberos security).
+        The krbtgt account password (requires Domain Admin, perform twice to invalidate all tickets – crucial for Kerberos security).
         Identify Active Sessions: Check who is logged in (query user or Task Manager -> Users).
         Identify Running Processes: Use Task Manager (Details view), Process Explorer (procexp.exe), or tasklist. Look for suspicious processes, unusual user contexts, high resource usage.
         Terminate Unauthorized Sessions & Processes: Forcefully log off suspicious remote/local sessions (logoff <SessionID>). Terminate unauthorized/malicious processes (Task Manager, taskkill /F /PID <PID>, Process Explorer).
@@ -42,11 +42,11 @@ Phase 2: User & Group Account Audit and Sanitization (Local & Domain)
     Domain (on DC/member server): List all domain user accounts (Active Directory Users and Computers - ADUC, Get-ADUser -Filter *). Pay attention to OU structure.
     Validate Against Known Users: Compare system lists against your official list of valid domain/local users. Identify all discrepancies.
     Audit Privileged Group Memberships: CRITICAL.
-    Local (on EACH machine): Administrators, Remote Desktop Users (net localgroup Administrators, etc.).
+    Local (on EACH machine): Administrators, Remote Desktop Users (net localgroup Administrators, etc.). -> Remove local Administrator accounts (and maybe all local accounts in Windows??)
     Domain (on DC): Domain Admins, Enterprise Admins, Schema Admins, Administrators (built-in), Account Operators, Server Operators, Backup Operators, DNSAdmins (Get-ADGroupMember, ADUC).
     Remove any unauthorized or unnecessary members from these groups. Apply least privilege principle.
     Check for Default/Guest Accounts: Ensure the built-in Guest account (local & domain) is disabled. Rename the built-in Administrator account (local & domain).
-    Verify Password Status: Check for accounts with empty passwords or passwords that never expire (local policies, AD user attributes). Check for accounts configured with reversible password encryption.
+    Verify Password Status: Check for accounts with empty passwords or passwords that never expire (local policies, AD user attributes). Check for accounts configured with reversible password encryption or have pre-auth disabled.
     Sanitize Accounts:
         Remove Unauthorized: Delete confirmed unauthorized local/domain accounts.
         Disable Suspicious/Unused: Disable accounts you are unsure about, service accounts not currently needed, or users temporarily locked out. Do NOT delete default privileged accounts (like Administrator), just rename and disable if possible.
@@ -68,7 +68,6 @@ Phase 4: Securing Remote Access & Network Services
     Audit & Harden Remote Desktop Protocol (RDP):
         Enable Network Level Authentication (NLA).
         Restrict RDP access to specific authorized users/groups (via System Properties -> Remote or GPO). Do not allow Administrators group by default if possible.
-        Change the default RDP port (security by obscurity, but can help).
         Use strong encryption levels (GPO).
     Audit & Harden Server Message Block (SMB)/File Shares:
         Disable SMBv1 (critical vulnerability).
@@ -171,7 +170,8 @@ Phase 9: Ongoing Monitoring, Response & CDC Operations
     Incident Response Documentation: Document all actions meticulously. Use official IR forms.
     Team Coordination: Constant communication.
     Scoring Awareness: Regularly check scoreboard; ensure services (AD Auth, DNS resolution, RDP access, etc.) are operational.
-    Phase 10: Incident Response Readiness & Execution
+
+Phase 10: Incident Response Readiness & Execution
     Goal: React swiftly and effectively when monitoring detects an incident.
     Activate Roles: Designated team members watch logs/alerts and execute responses.
     Execute Containment: Use pre-defined actions:
