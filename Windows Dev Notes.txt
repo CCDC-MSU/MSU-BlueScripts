@@ -1,13 +1,15 @@
 Phase 1, 2, and 3 should be done in the first 10 minutes and entirely automated if possible.
 
-- Script 1 to audit users and change passwords
+- Script 1 to audit users and change passwords -> Shaheen
 	- Probably best to do random passwords that output to a file. Make sure that this file isn't just left in plaintext on the Desktop.
 	- Some issues with a predetermined password format.
-- Script 2 to audit group memberships and check account privileges (password settings and pre-auth). Also check for local users (and probably delete them).
+- Script 2 to audit group memberships and check account privileges (password settings and pre-auth). Also check for local users (and probably delete them). -> Alex
 	- Figure out what groups exists and what they do
 	- I do not think that Windows boxes had local users last year, but we need to figure out what to do if we find them
-- Script 3 for GPO
+- Script 3 for GPO -> Me
 	- Look into GPO templates as well, might not need a script here
+
+- Script 4 service hardening -> Edward, Wallace
 
 Phase 4 is determined by what we actually need to be enabled for scoring, e.g. WinRM might not be necessary. Most of Phase 4 can probably be scripted
 
