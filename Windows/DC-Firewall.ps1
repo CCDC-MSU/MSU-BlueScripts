@@ -5,7 +5,7 @@ $ErrorActionPreference = "SilentlyContinue"
 
 $Argsarray = $ScriptArgs -Split ";"
 if ($Argsarray.Count -lt 3) {
-    Write-Host 'Usage - .\Firewall.ps1 "<Remote Management Subnet>;<Network Subnet>;NoPassthru"'
+    Write-Host 'Usage - .\Firewall.ps1 "<Remote Management Subnet>;<CCDC Subnet>;NoPassthru"'
     break
 }
 $Dispatcher = $Argsarray[0];
