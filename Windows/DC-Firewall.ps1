@@ -31,11 +31,6 @@ if (-not (Get-Command -Name New-NetFirewallRule -ErrorAction SilentlyContinue) -
     cmd.exe /c "netsh advfirewall set allprofiles firewallpolicy blockinbound,blockoutbound"
     netsh advfirewall firewall delete rule name=all
 
-    # Allow WinRM (80, 5985, 5986) inbound from Dispatcher
-    netsh advfirewall firewall add rule name="WINRM 80" dir=in protocol=TCP localport=80 remoteip=$Dispatcher action=allow
-    netsh advfirewall firewall add rule name="WINRM 5985" dir=in protocol=TCP localport=5985 remoteip=$Dispatcher action=allow
-    netsh advfirewall firewall add rule name="WINRM 5986" dir=in protocol=TCP localport=5986 remoteip=$Dispatcher action=allow
-
     # Allow RDP 3389 inbound and outbound from Dispatcher
     netsh advfirewall firewall add rule name="RDP Inbound" dir=in protocol=TCP localport=3389 remoteip=$Dispatcher action=allow
     netsh advfirewall firewall add rule name="RDP Outbound" dir=out protocol=TCP localport=3389 remoteip=$Dispatcher action=allow
@@ -104,9 +99,6 @@ else {
     Set-NetFirewallProfile -DefaultInboundAction Block -DefaultOutboundAction Block -Name Public -Enabled False
 
     Remove-NetFirewallRule -All
-
-    # WinRM inbound from Dispatcher
-    New-NetFirewallRule -DisplayName "WinRM" -Direction Inbound -Protocol TCP -LocalPort 80,5985,5986 -RemoteAddress $Dispatcher
 
     # RDP inbound/outbound from Dispatcher
     New-NetFirewallRule -DisplayName "RDP Inbound" -Direction Inbound -Protocol TCP -LocalPort 3389 -RemoteAddress $Dispatcher
