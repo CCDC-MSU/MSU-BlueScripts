@@ -7,10 +7,6 @@ This repository contains a Python Fabric-based automation framework designed for
 *   **Automated System Discovery**: Automatically fingerprints target systems to identify OS, users, services, and more.
 *   **Modular Hardening**: A flexible, module-based architecture for applying specific hardening configurations.
 *   **OS-Aware Deployment**: Automatically selects the appropriate scripts and configurations based on the detected OS family.
-*   **User & Sudo Management**: A dedicated module for comprehensive user account and `sudo` privilege management.
-*   **Extensive Script Library**: Integrates with a large repository of hardening scripts.
-*   **Dry-Run Capability**: Test deployments safely without making any changes to the target systems.
-*   **Module Testing Framework**: A built-in framework for testing individual hardening modules in isolation.
 
 ## Getting Started
 
@@ -48,13 +44,12 @@ This project is designed to be run from a central "jumpbox" or administrative ma
     ```
 
 4.  **Configure the Framework**:
-    *   **`config.yaml`**: This is the main configuration file. At a minimum, you should change the default password.
     *   **`hosts.txt`**: Add the IP addresses or hostnames of your target machines to this file, along with their credentials.
     *   **`users.json`**: If you are using the `user_hardening` module, configure your authorized users in this file.
 
 ## Usage
 
-All commands are run from the `fabric_deploy` directory using `fab`.
+All commands are run from the `Linux` directory using `fab`.
 
 ### Basic Operations
 
