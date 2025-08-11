@@ -45,6 +45,45 @@ For BSD systems, the module configures the native logging tools:
 *   **Process Accounting**: Enables process accounting to log all commands.
 *   **Shell History**: Increases the history size for `csh`.
 
+## Log Files Explained
+
+Linux
+
+   * `/etc/rsyslog.conf.backup.$(date +%Y%m%d_%H%M%S)`: A backup of the original rsyslog configuration file.
+   * `/etc/rsyslog.d/ccdc-security.conf`: configuration file for rsyslog that contains the logging rules.
+   * `/var/log/messages`: General, non-critical system messages.
+   * `/var/log/secure`: Privileged authentication and security-related messages.
+   * `/var/log/maillog`: Logs from the mail server.
+   * `/var/log/cron`: Logs related to scheduled tasks (cron jobs).
+   * `/var/log/auth.log`: Detailed authentication and authorization events.
+   * `/var/log/kern.log`: Messages from the Linux kernel.
+   * `/var/log/daemon.log`: Logs from background services (daemons).
+   * `/var/log/syslog`: A general-purpose log file for system events.
+   * `/var/log/ssh.log`: All connection attempts and activities related to the SSH daemon.
+   * `/var/log/sudo.log`: A log of all commands executed with sudo.
+   * `/etc/systemd/journald.conf.d/ccdc.conf`: Configuration for the systemd journal, making logs persistent across reboots and enabling compression.
+   * `/etc/audit/rules.d/ccdc.rules`: A set of rules for the auditd service to monitor file changes, privilege escalation, and other security-sensitive events.
+   * `/etc/logrotate.d/ccdc-security`: Configuration for logrotate to manage and rotate the new security log files.
+   * `/var/log/pacct`: Process accounting logs, which record every command executed on the system.
+   * `/etc/bash.bashrc`: System-wide configuration for the bash shell, modified to add timestamps to command history.
+
+  BSD
+
+   * `/etc/syslog.conf.backup.$(date +%Y%m%d_%H%M%S)`: A backup of the original BSD syslog.conf file.
+   * `/etc/syslog.conf`: The main configuration file for the syslogd daemon on BSD.
+   * `/var/log/messages`: General system messages.
+   * `/var/log/security`: Security-related events.
+   * `/var/log/auth.log`: Authentication and authorization logs.
+   * `/var/log/authpriv`: Privileged authentication logs.
+   * `/var/log/maillog`: Mail server logs.
+   * `/var/log/cron`: Logs from cron jobs.
+   * `/var/log/daemon.log`: Logs from background services.
+   * `/var/log/kern.log`: Kernel messages.
+   * `/var/log/ssh.log`: Logs from the SSH daemon.
+   * `/etc/newsyslog.conf`: Configuration for newsyslog (the BSD log rotator), modified to include the new security logs.
+   * `/var/account/acct`: Process accounting logs.
+   * `/etc/csh.cshrc`: System-wide configuration for the csh shell, modified to increase command history size.
+
 ## Usage
 
 This module is typically run as part of the main hardening pipeline. However, you can also test it individually.
