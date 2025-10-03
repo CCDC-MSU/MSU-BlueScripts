@@ -7,6 +7,7 @@ TMP_CSV="$(mktemp)"
 
 if [[ -z "$INPUT_CSV" || ! -f "$INPUT_CSV" ]]; then
     echo "Usage: $0 input.csv"
+    echo "Check updated_passwords.csv for new passwords. Original csv will also be updated for the appropriate user."
     exit 1
 fi
 
