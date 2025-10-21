@@ -62,3 +62,5 @@ for file in $files; do
         echo "pam_permit.so comes before pam_deny.so in $file | [INVESTIGATE!]"
     fi
 done
+
+debsums -c libpam-modules libpam0g libpam-runtime
