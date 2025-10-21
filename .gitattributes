@@ -1,0 +1,9 @@
+# Auto-detect text; use CRLF in working tree for text
+*         text=auto eol=crlf
+
+# Explicit overrides
+*.sh      text eol=lf
+*.bat     text eol=crlf
+*.ps1     text eol=crlf
+*.md      text eol=crlf
+*.txt     text eol=crlf
