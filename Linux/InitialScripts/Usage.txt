@@ -1,0 +1,1 @@
+To transport these scripts onto machines and execute them, transport.sh is used. Every other scripts needs to create a /tmp/log.txt file for it to be used by transport. transport.sh much be run as sudo or root.
