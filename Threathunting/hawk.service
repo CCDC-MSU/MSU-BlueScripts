@@ -1,0 +1,34 @@
+[Unit]
+Description=Hawk file access monitor
+DefaultDependencies=no
+# Start after filesystems are mounted but before most services
+After=local-fs.target
+Before=basic.target
+Conflicts=shutdown.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/hawk /etc/hawk.watchlist
+# Run as root; you can later drop privileges and use AmbientCapabilities
+User=root
+Group=root
+
+# Capabilities needed for fanotify + reading /proc
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE
+AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH CAP_DAC_OVERRIDE
+NoNewPrivileges=yes
+
+# Hardening (tighten as desired)
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+
+Restart=always
+RestartSec=2s
+
+[Install]
+WantedBy=sysinit.target
+
