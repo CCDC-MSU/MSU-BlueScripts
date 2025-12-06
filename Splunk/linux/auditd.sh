@@ -1,7 +1,7 @@
 #!/bin/bash
 ###################### GLOBALS ######################
 pm=""
-GITHUB_URL="https://raw.githubusercontent.com/BYU-CCDC/public-ccdc-resources/main"
+GITHUB_URL="https://raw.githubusercontent.com/CCDC-MSU/MSU-BlueScripts/main"
 LOCAL=false
 #####################################################
 
