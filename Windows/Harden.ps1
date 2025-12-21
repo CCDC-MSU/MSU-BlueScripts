@@ -24,27 +24,6 @@ $ErrorActionPreference = "Continue"
 if (Get-WmiObject -Query "select * from Win32_OperatingSystem where ProductType='2'") {
     Set-SmbServerConfiguration -EnableSMB1Protocol $false -Force
 
-    $groups = @("Domain Admins", "Enterprise Admins", "Administrators", "DnsAdmins", "Group Policy Creator Owners", "Schema Admins", "Key Admins", "Enterprise Key Admins")
-
-    foreach ($group in $groups) {
-        $excludedSamAccountNames = @("Administrator", "Domain Admins", "Enterprise Admins")
-
-        $members = Get-ADGroupMember -Identity $group | Where-Object {
-            $excludedSamAccountNames -notcontains $_.SamAccountName
-        }
-
-        foreach ($member in $members) {
-            try {
-                Remove-ADGroupMember -Identity $group -Members $member -Confirm:$false
-                Write-Host "Removed $($member.SamAccountName) from $group." -ForegroundColor Green
-            }
-            catch {
-                Write-Error "Failed to remove group member $($member.SamAccountName) from $group."
-            }
-        }
-    }
-
-
     try {
         Get-ADUser -Filter {DoesNotRequirePreAuth -eq $true} | Set-ADAccountControl -DoesNotRequirePreAuth $false
         Write-Host "Kerberos Pre-authentication enabled for applicable users." -ForegroundColor Green
