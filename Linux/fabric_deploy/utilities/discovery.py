@@ -65,8 +65,8 @@ class SystemDiscovery:
         errors = []
         for task_name, task_func in discovery_tasks:
             try:
-                logger.debug(f"Discovering {task_name}...")
                 task_func()
+                logger.debug("Finished task: %-20s. %s", task_name, self._format_task_result(task_name))
             except Exception as e:
                 error_msg = f"Failed to discover {task_name}: {str(e)}"
                 logger.error(error_msg)
@@ -77,7 +77,72 @@ class SystemDiscovery:
         
         logger.info(f"Discovery completed for {self.credentials.host}. Success: {self.server_info.discovery_successful}")
         return self.server_info
-    
+
+    def _format_task_result(self, task_name: str) -> str:
+        """Return a short, summary of what a discovery task found (for debug logs)."""
+        try:
+            if task_name == "basic system info":
+                return (
+                    f"hostname={self.server_info.hostname!r}, "
+                    f"uptime_set={bool(self.server_info.uptime)}, "
+                    f"default_shell={self.server_info.default_shell!r}"
+                )
+
+            if task_name == "operating system":
+                os_info = getattr(self.server_info, "os", None)
+                if os_info:
+                    return (
+                        f"distro={getattr(os_info, 'distro', None)!r}, "
+                        f"version={getattr(os_info, 'version', None)!r}, "
+                        f"kernel={getattr(os_info, 'kernel', None)!r}, "
+                        f"arch={getattr(os_info, 'architecture', None)!r}, "
+                        f"family={self._os_family!r}"
+                    )
+                return f"os_info=None, family={self._os_family!r}"
+
+            if task_name == "users":
+                users = getattr(self.server_info, "users", []) or []
+                sample = [getattr(u, "username", None) for u in users[:10] if getattr(u, "username", None)]
+                return f"count={len(users)}, sample={sample}"
+
+            if task_name == "services":
+                services = getattr(self.server_info, "services", []) or []
+                return f"running_count={len(services)}, sample={services[:10]}"
+
+            if task_name == "network configuration":
+                net = getattr(self.server_info, "network", None)
+                if not net:
+                    return "network=None"
+                interfaces = getattr(net, "interfaces", None) or ""
+                listening = getattr(net, "listening_ports", None) or ""
+                iface_lines = len(interfaces.splitlines()) if interfaces else 0
+                listen_lines = len(listening.splitlines()) if listening else 0
+                return (
+                    f"interfaces_lines={iface_lines}, "
+                    f"listening_lines={listen_lines}, "
+                    f"default_route={getattr(net, 'default_route', None)!r}"
+                )
+
+            if task_name == "security tools":
+                tools = getattr(self.server_info, "security_tools", {}) or {}
+                enabled = sorted([k for k, v in tools.items() if v])
+                return f"installed={enabled}"
+
+            if task_name == "system resources":
+                return (
+                    f"cpu_cores={getattr(self.server_info, 'cpu_cores', None)!r}, "
+                    f"memory_info_set={bool(getattr(self.server_info, 'memory_info', None))}, "
+                    f"disk_info_set={bool(getattr(self.server_info, 'disk_info', None))}"
+                )
+
+            if task_name == "package managers":
+                pms = getattr(self.server_info, "package_managers", []) or []
+                return f"available={pms}"
+
+            return "ok"
+        except Exception as e:
+            return f"summary_error={e!r}"
+
     def _run_command(self, command: str, warn: bool = True, timeout: int = 30) -> CommandResult:
         """
         Run a command and return the result
@@ -168,7 +233,6 @@ class SystemDiscovery:
                 shell_path = processor(result.output)
                 if shell_path and ('bash' in shell_path or 'sh' in shell_path):
                     self.server_info.default_shell = shell_path
-                    logger.debug(f"Detected default shell: {shell_path}")
                     break
     
     def _discover_os_info(self):
@@ -414,17 +478,18 @@ class SystemDiscovery:
         
         # Common package managers
         pm_commands = {
-            'apt': 'apt-get --version',
-            'yum': 'yum --version',
-            'dnf': 'dnf --version',
-            'zypper': 'zypper --version', 
-            'pacman': 'pacman --version',
-            'emerge': 'emerge --version',
-            'apk': 'apk --version',
-            'pkg': 'pkg --version',
-            'brew': 'brew --version',
-            'snap': 'snap --version',
-            'flatpak': 'flatpak --version'
+            'apt':      'apt-get --version',
+            'yum':      'yum --version',
+            'dnf':      'dnf --version',
+            'zypper':   'zypper --version', 
+            'pacman':   'pacman --version',
+            'emerge':   'emerge --version',
+            'apk':      'apk --version',
+            'pkg':      'pkg --version',
+            'brew':     'brew --version',
+            'snap':     'snap --version',
+            'flatpak':  'flatpak --version',
+            'slackpkg': 'slackpkg version'
         }
         
         for pm_name, pm_command in pm_commands.items():
