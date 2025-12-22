@@ -21,7 +21,7 @@ class BashScriptHardeningModule(HardeningModule):
         self.script_categories = script_categories or []
         self.priority_only = priority_only
         self.config = load_config()
-        self.scripts_base_path = Path(__file__).parent.parent.parent.parent / "repos"
+        self.scripts_base_path = Path(__file__).parent.parent.parent / "scripts"
         
     def get_name(self) -> str:
         return "bash_scripts"
