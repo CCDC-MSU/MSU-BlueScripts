@@ -63,23 +63,28 @@ All commands are run from the `Linux` directory using `fab`.
     fab discover --host <ip-address>
     ```
 
+*   **Discover All Hosts in hosts.txt**:
+    ```bash
+    fab discover-all
+    ```
+
 *   **Run the Full Hardening Pipeline**:
     This command will discover all hosts in `hosts.txt` and then apply the appropriate hardening modules.
     ```bash
-    fab harden-deploy
+    fab harden
     ```
 
 *   **Dry Run**:
     To see what changes would be made without actually applying them, use the `--dry-run` flag.
     ```bash
-    fab harden-deploy --dry-run
+    fab harden --dry-run
     ```
 
 ### Advanced Usage
 
 *   **Deploy Specific Modules**:
     ```bash
-    fab harden-deploy --modules=ssh_hardening,firewall_hardening
+    fab harden --modules=ssh_hardening,firewall_hardening
     ```
 
 *   **Deploy Scripts by Category**:
@@ -87,9 +92,9 @@ All commands are run from the `Linux` directory using `fab`.
     fab deploy-scripts --categories=users,ssh,firewall
     ```
 
-*   **Run an Arbitrary Local Bash Script on All Targets**:
+*   **Run an Arbitrary Local Script on All Targets**:
     ```bash
-    fab runbashscripts --file /path/to/script.sh
+    fab run-script --file /path/to/script.sh
     ```
     Runs in parallel across hosts. Output for each host is written under
     `script_outputs/<script_name>/` in this directory, and a per-host summary with return

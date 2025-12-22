@@ -94,10 +94,10 @@ def discover(c, host, user=None, key_file=None, password=None):
 
 
 @task
-def harden(c, hosts_file='hosts.txt'):
-    """Automated hardening pipeline - discovers and hardens all hosts"""
+def discover_all(c, hosts_file='hosts.txt'):
+    """Automated discovery pipeline - discovers all hosts"""
     logger.info("=" * 60)
-    logger.info("CCDC AUTOMATED HARDENING PIPELINE STARTING")
+    logger.info("CCDC DISCOVERY PIPELINE STARTING")
     logger.info("=" * 60)
     
     start_time = datetime.now()
@@ -208,7 +208,7 @@ def harden(c, hosts_file='hosts.txt'):
     duration = end_time - start_time
     
     logger.info("\n" + "=" * 60)
-    logger.info("CCDC AUTOMATED HARDENING PIPELINE COMPLETED")
+    logger.info("CCDC DISCOVERY PIPELINE COMPLETED")
     logger.info("=" * 60)
     logger.info(f"Total time: {duration}")
     if len(servers) > 0:
@@ -216,17 +216,17 @@ def harden(c, hosts_file='hosts.txt'):
     
     # Optional: Deploy hardening if requested
     if len(servers) > 0 and successful_discoveries > 0:
-        logger.info(f"\nDiscovery complete. Use 'fab harden-deploy' to apply hardening configurations.")
+        logger.info(f"\nDiscovery complete. Use 'fab harden' to apply hardening configurations.")
     
     return discovered_servers
 
 
 @task
-def harden_deploy(c, hosts_file='hosts.txt', dry_run=False, modules=None, 
-                 script_categories=None, priority_only=False):
-    """Deploy hardening configurations to discovered hosts"""
+def harden(c, hosts_file='hosts.txt', dry_run=False, modules=None, 
+           script_categories=None, priority_only=False):
+    """Apply hardening configurations to discovered hosts"""
     logger.info("=" * 60)
-    logger.info("CCDC HARDENING DEPLOYMENT STARTING")
+    logger.info("CCDC HARDENING STARTING")
     logger.info("=" * 60)
     
     if dry_run:
@@ -335,7 +335,7 @@ def harden_deploy(c, hosts_file='hosts.txt', dry_run=False, modules=None,
     duration = end_time - start_time
     
     logger.info("\n" + "=" * 60)
-    logger.info("CCDC HARDENING DEPLOYMENT COMPLETED")
+    logger.info("CCDC HARDENING COMPLETED")
     logger.info("=" * 60)
     logger.info(f"Total time: {duration}")
     if len(servers) > 0:
@@ -359,13 +359,13 @@ def deploy_scripts(c, hosts_file='hosts.txt', dry_run=False, categories=None, pr
     if categories:
         logger.info(f"Script categories: {categories}")
     
-    return harden_deploy(c, hosts_file=hosts_file, dry_run=dry_run, 
-                        modules='bash_scripts', script_categories=script_categories, 
-                        priority_only=priority_only)
+    return harden(c, hosts_file=hosts_file, dry_run=dry_run,
+                  modules='bash_scripts', script_categories=script_categories,
+                  priority_only=priority_only)
 
 
 @task
-def runbashscripts(c, file, hosts_file='hosts.txt', sudo=True, timeout=300, output_dir='script_outputs', shell='bash', dry_run=False):
+def run_script(c, file, hosts_file='hosts.txt', sudo=True, timeout=300, output_dir='script_outputs', shell='bash', dry_run=False):
     """Upload and run a local script on all targets"""
     script_path = Path(file).expanduser()
     if not script_path.is_file():
