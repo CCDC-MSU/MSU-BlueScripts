@@ -87,6 +87,15 @@ All commands are run from the `Linux` directory using `fab`.
     fab deploy-scripts --categories=users,ssh,firewall
     ```
 
+*   **Run an Arbitrary Local Bash Script on All Targets**:
+    ```bash
+    fab runbashscripts --file /path/to/script.sh
+    ```
+    Runs in parallel across hosts. Output for each host is written under
+    `script_outputs/<script_name>/` in this directory, and a per-host summary with return
+    codes is printed at the end. Use `--output-dir` to change the local output folder.
+    Optional flags: `--sudo=False`, `--timeout=120`, `--hosts-file=hosts.txt`, `--shell=sh`, `--dry-run`.
+
 ## Module Testing
 
 This framework includes a powerful testing system for developing and validating individual hardening modules.

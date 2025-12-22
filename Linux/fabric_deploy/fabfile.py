@@ -11,7 +11,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import json
 import getpass
 import logging
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from pathlib import Path
 from fabric import Connection, Config
 from invoke import task
 
@@ -359,6 +362,234 @@ def deploy_scripts(c, hosts_file='hosts.txt', dry_run=False, categories=None, pr
     return harden_deploy(c, hosts_file=hosts_file, dry_run=dry_run, 
                         modules='bash_scripts', script_categories=script_categories, 
                         priority_only=priority_only)
+
+
+@task
+def runbashscripts(c, file, hosts_file='hosts.txt', sudo=True, timeout=300, output_dir='script_outputs', shell='bash', dry_run=False):
+    """Upload and run a local script on all targets"""
+    script_path = Path(file).expanduser()
+    if not script_path.is_file():
+        logger.error(f"Script file not found: {script_path}")
+        return
+
+    try:
+        script_content = script_path.read_text()
+    except Exception as e:
+        logger.error(f"Failed to read script file {script_path}: {e}")
+        return
+
+    # Check if hosts file exists
+    if not os.path.exists(hosts_file):
+        logger.error(f"Hosts file not found: {hosts_file}")
+        return
+
+    # Parse hosts file
+    try:
+        servers = parse_hosts_file(hosts_file)
+    except Exception as e:
+        logger.error(f"Error parsing hosts file: {e}")
+        return
+
+    if not servers:
+        logger.error("No servers found in hosts file")
+        return
+
+    output_dir_path = Path(output_dir)
+    output_dir_path.mkdir(parents=True, exist_ok=True)
+    script_dir_name = script_path.name.replace(" ", "_")
+    script_output_dir = output_dir_path / script_dir_name
+    script_output_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info(f"Running {script_path.name} on {len(servers)} hosts (parallel)")
+    if dry_run:
+        logger.info("DRY RUN MODE - No changes will be made")
+    logger.info(f"Per-host logs: {script_output_dir}")
+
+    start_time = datetime.now()
+    remote_dir = "/tmp/ccdc_scripts"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    def _run_on_host(server_creds):
+        host_label = server_creds.host.replace(":", "_").replace("/", "_")
+        output_file = script_output_dir / f"{host_label}_{timestamp}.log"
+        logger.info(f"Running {script_path.name} on {server_creds.host}")
+
+        try:
+            # Set up connection
+            connect_kwargs = {
+                'allow_agent': False,
+                'look_for_keys': False
+            }
+            config_overrides = {
+                'sudo': {'password': None},
+                'load_ssh_configs': False
+            }
+
+            if server_creds.key_file:
+                connect_kwargs['key_filename'] = server_creds.key_file
+                logger.debug(f"Using SSH key: {server_creds.key_file}")
+            elif server_creds.password:
+                connect_kwargs['password'] = server_creds.password
+                config_overrides['sudo']['password'] = server_creds.password
+                logger.debug("Using password authentication")
+
+            if server_creds.port != 22:
+                connect_kwargs['port'] = server_creds.port
+
+            config = Config(overrides=config_overrides)
+
+            def _run_remote(conn, command, use_sudo=False):
+                if use_sudo and conn.user != 'root':
+                    command = f"sudo {command}"
+                return conn.run(command, hide=True, warn=True)
+
+            with Connection(server_creds.host, user=server_creds.user,
+                            config=config, connect_kwargs=connect_kwargs) as conn:
+                if dry_run:
+                    _write_runbash_output(
+                        output_file,
+                        server_creds,
+                        script_path,
+                        [],
+                        None,
+                        error_message="DRY RUN - not executed"
+                    )
+                    return {
+                        'host': server_creds.host,
+                        'exit_code': None,
+                        'status': 'dry-run',
+                        'output_file': str(output_file)
+                    }
+
+                steps = []
+
+                # Create staging directory
+                create_result = _run_remote(conn, f"mkdir -p {remote_dir} && chmod 755 {remote_dir}")
+                steps.append(("create staging dir", create_result))
+                if not create_result.ok:
+                    logger.error(f"{server_creds.host}: failed to create staging dir")
+                    _write_runbash_output(output_file, server_creds, script_path, steps, None)
+                    return {
+                        'host': server_creds.host,
+                        'exit_code': create_result.exited,
+                        'status': 'failed-create-dir',
+                        'output_file': str(output_file)
+                    }
+
+                # Upload script via heredoc
+                remote_script = f"{remote_dir}/{script_path.name}"
+                marker = f"CCDC_SCRIPT_EOF_{int(time.time())}"
+                upload_cmd = f"cat > {remote_script} << '{marker}'\n{script_content}\n{marker}"
+                upload_result = _run_remote(conn, upload_cmd)
+                steps.append(("upload script", upload_result))
+                if not upload_result.ok:
+                    logger.error(f"{server_creds.host}: failed to upload script")
+                    _write_runbash_output(output_file, server_creds, script_path, steps, None)
+                    return {
+                        'host': server_creds.host,
+                        'exit_code': upload_result.exited,
+                        'status': 'failed-upload',
+                        'output_file': str(output_file)
+                    }
+
+                # Execute script
+                exec_cmd = f"{shell} {remote_script}"
+                if timeout and int(timeout) > 0:
+                    exec_cmd = f"timeout {int(timeout)} {exec_cmd}"
+                exec_result = _run_remote(conn, exec_cmd, use_sudo=sudo)
+                steps.append(("execute script", exec_result))
+
+                # Cleanup
+                cleanup_result = _run_remote(conn, f"rm -f {remote_script}")
+                steps.append(("cleanup script", cleanup_result))
+
+                _write_runbash_output(output_file, server_creds, script_path, steps, exec_result)
+
+                if not exec_result.ok:
+                    logger.error(f"{server_creds.host}: script failed with exit {exec_result.exited}")
+
+                status = "ok" if exec_result.ok else "failed"
+                return {
+                    'host': server_creds.host,
+                    'exit_code': exec_result.exited,
+                    'status': status,
+                    'output_file': str(output_file)
+                }
+
+        except Exception as e:
+            logger.error(f"{server_creds.host}: {e}")
+            _write_runbash_output(
+                output_file,
+                server_creds,
+                script_path,
+                [],
+                None,
+                error_message=str(e)
+            )
+            return {
+                'host': server_creds.host,
+                'exit_code': None,
+                'status': f'error: {e}',
+                'output_file': str(output_file)
+            }
+
+    summary = []
+    max_workers = min(32, len(servers)) if servers else 1
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {executor.submit(_run_on_host, server): server for server in servers}
+        for future in as_completed(future_map):
+            summary.append(future.result())
+
+    logger.info("Summary:")
+    for item in sorted(summary, key=lambda x: x['host']):
+        if item['exit_code'] is None:
+            logger.info(f"{item['host']}: {item['status']}")
+        else:
+            logger.info(f"{item['host']}: {item['exit_code']}")
+
+    end_time = datetime.now()
+    duration = end_time - start_time
+    successful_runs = sum(1 for r in summary if r['status'] == 'ok')
+    failed_runs = sum(1 for r in summary if r['status'] not in ['ok', 'dry-run'])
+    dry_runs = sum(1 for r in summary if r['status'] == 'dry-run')
+    logger.info(f"Completed in {duration} | ok={successful_runs} failed={failed_runs} dry-run={dry_runs}")
+
+    return summary
+
+
+def _write_runbash_output(output_file, server_creds, script_path, steps, exec_result, error_message=None):
+    """Write per-host script output to a local file."""
+    try:
+        with open(output_file, 'w') as f:
+            f.write(f"Host: {server_creds.host}\n")
+            f.write(f"User: {server_creds.user}\n")
+            f.write(f"Script: {script_path}\n")
+            f.write(f"Timestamp: {datetime.now().isoformat()}\n")
+            f.write("\n")
+            if error_message:
+                f.write(f"Error: {error_message}\n\n")
+
+            for name, result in steps:
+                f.write(f"[{name}]\n")
+                if result is None:
+                    f.write("No result\n\n")
+                    continue
+                f.write(f"Exit code: {result.exited}\n")
+                if result.stdout:
+                    f.write("STDOUT:\n")
+                    f.write(result.stdout)
+                    f.write("\n")
+                if result.stderr:
+                    f.write("STDERR:\n")
+                    f.write(result.stderr)
+                    f.write("\n")
+                f.write("\n")
+
+            if exec_result is not None:
+                f.write("Final exit code: ")
+                f.write(str(exec_result.exited))
+                f.write("\n")
+    except Exception as e:
+        logger.error(f"Failed to write output file {output_file}: {e}")
 
 
 @task 
