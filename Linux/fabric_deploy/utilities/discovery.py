@@ -75,6 +75,9 @@ class SystemDiscovery:
         self.server_info.discovery_errors = errors
         self.server_info.discovery_successful = len(errors) == 0
         
+        # output detailed debug
+        logger.debug("Server info: %s", self.server_info)
+
         logger.info(f"Discovery completed for {self.credentials.host}. Success: {self.server_info.discovery_successful}")
         return self.server_info
 
@@ -440,8 +443,7 @@ class SystemDiscovery:
         
         # Common security tools to check
         tools_to_check = [
-            'ufw', 'iptables', 'firewalld', 'fail2ban', 'chkrootkit', 'rkhunter',
-            'clamav', 'aide', 'tripwire', 'lynis', 'nmap', 'wireshark'
+            'iptables', 'fail2ban', 'rkhunter', 'aide', 'tripwire', 'lynis',
         ]
         
         for tool in tools_to_check:
