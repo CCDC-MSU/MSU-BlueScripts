@@ -67,12 +67,14 @@ All commands are run from the `Linux` directory using `fab`.
     ```bash
     fab discover-all
     ```
+    Runs in parallel. Per-host logs are written to `logs/discover-all/<host>/<timestamp>.log`.
 
 *   **Run the Full Hardening Pipeline**:
     This command will discover all hosts in `hosts.txt` and then apply the appropriate hardening modules.
     ```bash
     fab harden
     ```
+    Runs in parallel. Per-host logs are written to `logs/harden/<host>/<timestamp>.log`.
 
 *   **Dry Run**:
     To see what changes would be made without actually applying them, use the `--dry-run` flag.

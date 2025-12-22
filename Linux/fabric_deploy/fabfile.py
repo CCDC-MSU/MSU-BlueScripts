@@ -12,7 +12,9 @@ import json
 import getpass
 import logging
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from fabric import Connection, Config
@@ -45,6 +47,70 @@ except Exception as e:
     CONFIG = {}
 
 
+class _ThreadFilter(logging.Filter):
+    def __init__(self, thread_id):
+        super().__init__()
+        self.thread_id = thread_id
+
+    def filter(self, record):
+        return record.thread == self.thread_id
+
+
+def _get_console_logger():
+    console_logger = logging.getLogger("console")
+    if not console_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        console_logger.addHandler(handler)
+        console_logger.setLevel(logging.INFO)
+        console_logger.propagate = False
+    return console_logger
+
+
+def _configure_parallel_logging():
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        root.removeHandler(handler)
+    root.setLevel(logging.DEBUG)
+
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.ERROR)
+    console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    root.addHandler(console_handler)
+
+    logging.getLogger('paramiko').setLevel(logging.WARNING)
+    logging.getLogger('fabric').setLevel(logging.WARNING)
+    logging.getLogger('invoke').setLevel(logging.WARNING)
+
+
+def _host_label(server_creds):
+    label = server_creds.host.replace(":", "_").replace("/", "_").replace(" ", "_")
+    if getattr(server_creds, 'port', 22) != 22:
+        label = f"{label}_{server_creds.port}"
+    return label
+
+
+@contextmanager
+def _host_log_handler(task_name, host_label, timestamp):
+    log_dir = Path("logs") / task_name / host_label
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"{timestamp}.log"
+
+    handler = logging.FileHandler(log_path)
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    handler.addFilter(_ThreadFilter(threading.get_ident()))
+
+    root = logging.getLogger()
+    root.addHandler(handler)
+    try:
+        yield log_path
+    finally:
+        root.removeHandler(handler)
+        handler.close()
+
+
 @task
 def discover(c, host, user=None, key_file=None, password=None):
     """Discover system information on target host"""
@@ -55,7 +121,7 @@ def discover(c, host, user=None, key_file=None, password=None):
         password = CONFIG.get('connection', {}).get('password')
     
     # Handle authentication
-    connect_kwargs = {}
+    connect_kwargs = {'allow_agent':False,'look_for_keys':False }
     config_overrides = {
         'sudo': {'password': None},
         'load_ssh_configs': False  # Disable SSH config loading to avoid parse errors
@@ -96,128 +162,139 @@ def discover(c, host, user=None, key_file=None, password=None):
 @task
 def discover_all(c, hosts_file='hosts.txt'):
     """Automated discovery pipeline - discovers all hosts"""
-    logger.info("=" * 60)
-    logger.info("CCDC DISCOVERY PIPELINE STARTING")
-    logger.info("=" * 60)
-    
+    _configure_parallel_logging()
+    console_logger = _get_console_logger()
+
+    console_logger.info("=" * 60)
+    console_logger.info("CCDC DISCOVERY PIPELINE STARTING (PARALLEL)")
+    console_logger.info("=" * 60)
+
     start_time = datetime.now()
-    
+
     # Check if hosts file exists
     if not os.path.exists(hosts_file):
-        logger.error(f"Hosts file not found: {hosts_file}")
+        console_logger.error(f"Hosts file not found: {hosts_file}")
         return
-    
+
     # Parse hosts file
     try:
         servers = parse_hosts_file(hosts_file)
     except Exception as e:
-        logger.error(f"Error parsing hosts file: {e}")
+        console_logger.error(f"Error parsing hosts file: {e}")
         return
-        
+
     if not servers:
-        logger.error("No servers found in hosts file or file not found")
+        console_logger.error("No servers found in hosts file or file not found")
         return
-    
-    logger.info(f"Found {len(servers)} servers to process")
-    
-    # Store all server info objects
+
+    console_logger.info(f"Found {len(servers)} servers to process")
+    console_logger.info("Logs: logs/discover-all/<host>/<timestamp>.log")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    def _discover_host(server_creds):
+        host_id = _host_label(server_creds)
+        with _host_log_handler("discover-all", host_id, timestamp) as log_path:
+            try:
+                logger.info(f"Starting discovery on {server_creds.host}")
+                # Set up connection
+                connect_kwargs = {
+                    'allow_agent': False,
+                    'look_for_keys': False
+                }
+                config_overrides = {
+                    'sudo': {'password': None},
+                    'load_ssh_configs': False  # Disable SSH config loading
+                }
+
+                if server_creds.key_file:
+                    connect_kwargs['key_filename'] = server_creds.key_file
+                    logger.info(f"Using SSH key: {server_creds.key_file}")
+                elif server_creds.password:
+                    connect_kwargs['password'] = server_creds.password
+                    config_overrides['sudo']['password'] = server_creds.password
+                    logger.info("Using password authentication")
+
+                # Add port if specified
+                if server_creds.port != 22:
+                    connect_kwargs['port'] = server_creds.port
+
+                config = Config(overrides=config_overrides)
+
+                # Run discovery
+                with Connection(server_creds.host, user=server_creds.user,
+                              config=config, connect_kwargs=connect_kwargs) as conn:
+                    discovery = SystemDiscovery(conn, server_creds)
+                    server_info = discovery.discover_system()
+
+                    # Store discovery instance for OS family access
+                    server_info._discovery = discovery
+
+                    if server_info.discovery_successful:
+                        logger.info(f"Discovery successful for {server_creds.host}")
+                        logger.info(f"OS: {server_info.os.distro} {server_info.os.version}")
+                        logger.info(f"Users: {server_info.regular_usernames}")
+                        logger.info(f"Services: {len(server_info.services)} running")
+                        logger.info(f"Security tools: {[k for k, v in server_info.security_tools.items() if v]}")
+                    else:
+                        logger.error(f"Discovery failed for {server_creds.host}")
+                        for error in server_info.discovery_errors:
+                            logger.error(f"Error: {error}")
+
+                return {
+                    'host': server_creds.host,
+                    'success': server_info.discovery_successful,
+                    'server_info': server_info,
+                    'log_file': str(log_path)
+                }
+
+            except Exception as e:
+                logger.error(f"Discovery failed for {server_creds.host}: {e}")
+                server_info = ServerInfo(hostname=server_creds.host, credentials=server_creds)
+                server_info.discovery_successful = False
+                server_info.discovery_errors.append(str(e))
+                return {
+                    'host': server_creds.host,
+                    'success': False,
+                    'server_info': server_info,
+                    'log_file': str(log_path)
+                }
+
     discovered_servers = []
-    successful_discoveries = 0
-    failed_discoveries = 0
-    
-    # Discovery phase
-    logger.info("\n" + "=" * 40)
-    logger.info("DISCOVERY PHASE")
-    logger.info("=" * 40)
-    
-    for server_creds in servers:
-        logger.info(f"\n--- Discovering {server_creds.host} ---")
-        
-        try:
-            # Set up connection
-            connect_kwargs = {}
-            config_overrides = {
-                'sudo': {'password': None},
-                'load_ssh_configs': False  # Disable SSH config loading
-            }
-            
-            if server_creds.key_file:
-                connect_kwargs['key_filename'] = server_creds.key_file
-                logger.info(f"Using SSH key: {server_creds.key_file}")
-            elif server_creds.password:
-                connect_kwargs['password'] = server_creds.password
-                config_overrides['sudo']['password'] = server_creds.password
-                logger.info("Using password authentication")
-            
-            # Add port if specified
-            if server_creds.port != 22:
-                connect_kwargs['port'] = server_creds.port
-            
-            config = Config(overrides=config_overrides)
-            
-            # Run discovery
-            with Connection(server_creds.host, user=server_creds.user, 
-                          config=config, connect_kwargs=connect_kwargs) as conn:
-                discovery = SystemDiscovery(conn, server_creds)
-                server_info = discovery.discover_system()
-                
-                # Store discovery instance for OS family access
-                server_info._discovery = discovery
-                
-                discovered_servers.append(server_info)
-                
-                if server_info.discovery_successful:
-                    successful_discoveries += 1
-                    logger.info(f"✓ Discovery successful for {server_creds.host}")
-                else:
-                    failed_discoveries += 1
-                    logger.error(f"✗ Discovery failed for {server_creds.host}")
-                    
-        except Exception as e:
-            failed_discoveries += 1
-            logger.error(f"✗ Discovery failed for {server_creds.host}: {e}")
-            # Create a minimal server info object to track the failure
-            server_info = ServerInfo(hostname=server_creds.host, credentials=server_creds)
-            server_info.discovery_successful = False
-            server_info.discovery_errors.append(str(e))
-            discovered_servers.append(server_info)
-    
-    # Summary of discovery phase
-    logger.info("\n" + "=" * 40)
-    logger.info("DISCOVERY PHASE SUMMARY")
-    logger.info("=" * 40)
-    logger.info(f"Total servers: {len(servers)}")
-    logger.info(f"Successful discoveries: {successful_discoveries}")
-    logger.info(f"Failed discoveries: {failed_discoveries}")
-    
-    # Print detailed summary for each server
-    for server in discovered_servers:
-        if server.discovery_successful:
-            logger.info(f"\n{server.hostname}:")
-            logger.info(f"  OS: {server.os.distro} {server.os.version}")
-            logger.info(f"  Users: {server.regular_usernames}")
-            logger.info(f"  Services: {len(server.services)} running")
-            logger.info(f"  Security tools: {[k for k, v in server.security_tools.items() if v]}")
-        else:
-            logger.error(f"\n{server.hostname}: DISCOVERY FAILED")
-            for error in server.discovery_errors:
-                logger.error(f"  Error: {error}")
-    
-    # End time and summary
+    results = []
+    max_workers = min(16, len(servers)) if servers else 1
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = []
+        for server_creds in servers:
+            console_logger.info(f"Starting discovery on {server_creds.host}")
+            futures.append(executor.submit(_discover_host, server_creds))
+
+        for future in as_completed(futures):
+            result = future.result()
+            results.append(result)
+            discovered_servers.append(result['server_info'])
+
+    successful_discoveries = sum(1 for r in results if r['success'])
+    failed_discoveries = len(results) - successful_discoveries
+
     end_time = datetime.now()
     duration = end_time - start_time
-    
-    logger.info("\n" + "=" * 60)
-    logger.info("CCDC DISCOVERY PIPELINE COMPLETED")
-    logger.info("=" * 60)
-    logger.info(f"Total time: {duration}")
+
+    console_logger.info("=" * 60)
+    console_logger.info("CCDC DISCOVERY PIPELINE COMPLETED")
+    console_logger.info("=" * 60)
+    console_logger.info(f"Total time: {duration}")
     if len(servers) > 0:
-        logger.info(f"Discovery success rate: {successful_discoveries}/{len(servers)} ({(successful_discoveries/len(servers)*100):.1f}%)")
-    
-    # Optional: Deploy hardening if requested
+        console_logger.info(
+            f"Discovery success rate: {successful_discoveries}/{len(servers)} ({(successful_discoveries/len(servers)*100):.1f}%)"
+        )
+    if failed_discoveries > 0:
+        failed_hosts = [r['host'] for r in results if not r['success']]
+        console_logger.error(f"Discovery failed for: {', '.join(failed_hosts)}")
+
     if len(servers) > 0 and successful_discoveries > 0:
-        logger.info(f"\nDiscovery complete. Use 'fab harden' to apply hardening configurations.")
-    
+        console_logger.info("Discovery complete. Use 'fab harden' to apply hardening configurations.")
+
     return discovered_servers
 
 
@@ -225,122 +302,166 @@ def discover_all(c, hosts_file='hosts.txt'):
 def harden(c, hosts_file='hosts.txt', dry_run=False, modules=None, 
            script_categories=None, priority_only=False):
     """Apply hardening configurations to discovered hosts"""
-    logger.info("=" * 60)
-    logger.info("CCDC HARDENING STARTING")
-    logger.info("=" * 60)
-    
+    _configure_parallel_logging()
+    console_logger = _get_console_logger()
+
+    console_logger.info("=" * 60)
+    console_logger.info("CCDC HARDENING STARTING (PARALLEL)")
+    console_logger.info("=" * 60)
+
     if dry_run:
-        logger.info("DRY RUN MODE - No changes will be made")
-    
+        console_logger.info("DRY RUN MODE - No changes will be made")
+
     start_time = datetime.now()
-    
+
     # Check if hosts file exists
     if not os.path.exists(hosts_file):
-        logger.error(f"Hosts file not found: {hosts_file}")
+        console_logger.error(f"Hosts file not found: {hosts_file}")
         return
-    
+
     # Parse hosts file
     try:
         servers = parse_hosts_file(hosts_file)
     except Exception as e:
-        logger.error(f"Error parsing hosts file: {e}")
+        console_logger.error(f"Error parsing hosts file: {e}")
         return
-        
+
     if not servers:
-        logger.error("No servers found in hosts file")
+        console_logger.error("No servers found in hosts file")
         return
-    
+
     # Parse modules if provided
     if modules:
         modules = [m.strip() for m in modules.split(',')]
-        logger.info(f"Applying modules: {modules}")
-    
+        console_logger.info(f"Applying modules: {modules}")
+
     # Parse script categories if provided
     if script_categories:
         script_categories = [c.strip() for c in script_categories.split(',')]
-        logger.info(f"Script categories: {script_categories}")
-    
+        console_logger.info(f"Script categories: {script_categories}")
+
     if priority_only:
-        logger.info("Priority scripts only: enabled")
-    
-    logger.info(f"Found {len(servers)} servers to harden")
-    
-    successful_hardenings = 0
-    failed_hardenings = 0
-    
-    # Hardening phase
-    logger.info("\n" + "=" * 40)
-    logger.info("HARDENING PHASE")
-    logger.info("=" * 40)
-    
-    for server_creds in servers:
-        logger.info(f"\n--- Hardening {server_creds.host} ---")
-        
-        try:
-            # Set up connection
-            connect_kwargs = {}
-            config_overrides = {
-                'sudo': {'password': None},
-                'load_ssh_configs': False
-            }
-            
-            if server_creds.key_file:
-                connect_kwargs['key_filename'] = server_creds.key_file
-                logger.info(f"Using SSH key: {server_creds.key_file}")
-            elif server_creds.password:
-                connect_kwargs['password'] = server_creds.password
-                config_overrides['sudo']['password'] = server_creds.password
-                logger.info("Using password authentication")
-            
-            # Add port if specified
-            if server_creds.port != 22:
-                connect_kwargs['port'] = server_creds.port
-            
-            config = Config(overrides=config_overrides)
-            
-            # Run discovery and hardening
-            with Connection(server_creds.host, user=server_creds.user, 
-                          config=config, connect_kwargs=connect_kwargs) as conn:
-                
-                # First discover the system
-                discovery = SystemDiscovery(conn, server_creds)
-                server_info = discovery.discover_system()
-                server_info._discovery = discovery
-                
-                if not server_info.discovery_successful:
-                    logger.error(f"Discovery failed for {server_creds.host}, skipping hardening")
-                    failed_hardenings += 1
-                    continue
-                
-                # Then deploy hardening
-                deployer = HardeningDeployer(conn, server_info)
-                result = deployer.deploy_hardening(
-                    dry_run=dry_run, 
-                    modules=modules,
-                    script_categories=script_categories,
-                    priority_only=priority_only
-                )
-                
-                logger.info(f"Hardening completed for {server_creds.host}")
-                logger.info(f"Summary:\n{result['summary']}")
-                
-                successful_hardenings += 1
-                    
-        except Exception as e:
-            failed_hardenings += 1
-            logger.error(f"✗ Hardening failed for {server_creds.host}: {e}")
-    
+        console_logger.info("Priority scripts only: enabled")
+
+    console_logger.info(f"Found {len(servers)} servers to harden")
+    console_logger.info("Logs: logs/harden/<host>/<timestamp>.log")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    def _harden_host(server_creds):
+        host_id = _host_label(server_creds)
+        with _host_log_handler("harden", host_id, timestamp) as log_path:
+            try:
+                logger.info(f"Starting hardening on {server_creds.host}")
+                # Set up connection
+                connect_kwargs = {
+                    'allow_agent': False,
+                    'look_for_keys': False
+                }
+                config_overrides = {
+                    'sudo': {'password': None},
+                    'load_ssh_configs': False
+                }
+
+                if server_creds.key_file:
+                    connect_kwargs['key_filename'] = server_creds.key_file
+                    logger.info(f"Using SSH key: {server_creds.key_file}")
+                elif server_creds.password:
+                    connect_kwargs['password'] = server_creds.password
+                    config_overrides['sudo']['password'] = server_creds.password
+                    logger.info("Using password authentication")
+
+                # Add port if specified
+                if server_creds.port != 22:
+                    connect_kwargs['port'] = server_creds.port
+
+                config = Config(overrides=config_overrides)
+
+                # Run discovery and hardening
+                with Connection(server_creds.host, user=server_creds.user,
+                              config=config, connect_kwargs=connect_kwargs) as conn:
+
+                    # First discover the system
+                    discovery = SystemDiscovery(conn, server_creds)
+                    server_info = discovery.discover_system()
+                    server_info._discovery = discovery
+
+                    if not server_info.discovery_successful:
+                        logger.error(f"Discovery failed for {server_creds.host}, skipping hardening")
+                        return {
+                            'host': server_creds.host,
+                            'status': 'discovery-failed',
+                            'log_file': str(log_path)
+                        }
+
+                    # Then deploy hardening
+                    deployer = HardeningDeployer(conn, server_info)
+                    result = deployer.deploy_hardening(
+                        dry_run=dry_run,
+                        modules=modules,
+                        script_categories=script_categories,
+                        priority_only=priority_only
+                    )
+
+                    logger.info(f"Hardening completed for {server_creds.host}")
+                    logger.info(f"Summary:\n{result['summary']}")
+
+                    results = result.get('results', {})
+                    failed_actions = any(
+                        not action.success for module_results in results.values() for action in module_results
+                    )
+                    status = "dry-run" if dry_run else "ok"
+                    if failed_actions:
+                        status = "failed"
+                        logger.error(f"Hardening had failures for {server_creds.host}")
+
+                    return {
+                        'host': server_creds.host,
+                        'status': status,
+                        'log_file': str(log_path)
+                    }
+
+            except Exception as e:
+                logger.error(f"Hardening failed for {server_creds.host}: {e}")
+                return {
+                    'host': server_creds.host,
+                    'status': f'error: {e}',
+                    'log_file': str(log_path)
+                }
+
+    results = []
+    max_workers = min(16, len(servers)) if servers else 1
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = []
+        for server_creds in servers:
+            console_logger.info(f"Starting hardening on {server_creds.host}")
+            futures.append(executor.submit(_harden_host, server_creds))
+
+        for future in as_completed(futures):
+            results.append(future.result())
+
+    successful_hardenings = sum(1 for r in results if r['status'] == 'ok')
+    failed_hardenings = sum(1 for r in results if r['status'] not in ['ok', 'dry-run'])
+    dry_runs = sum(1 for r in results if r['status'] == 'dry-run')
+
     # End summary
     end_time = datetime.now()
     duration = end_time - start_time
-    
-    logger.info("\n" + "=" * 60)
-    logger.info("CCDC HARDENING COMPLETED")
-    logger.info("=" * 60)
-    logger.info(f"Total time: {duration}")
+
+    console_logger.info("=" * 60)
+    console_logger.info("CCDC HARDENING COMPLETED")
+    console_logger.info("=" * 60)
+    console_logger.info(f"Total time: {duration}")
     if len(servers) > 0:
-        logger.info(f"Hardening success rate: {successful_hardenings}/{len(servers)} ({(successful_hardenings/len(servers)*100):.1f}%)")
-    
+        console_logger.info(
+            f"Hardening success rate: {successful_hardenings}/{len(servers)} ({(successful_hardenings/len(servers)*100):.1f}%)"
+        )
+    if dry_runs > 0:
+        console_logger.info(f"Dry runs: {dry_runs}")
+    if failed_hardenings > 0:
+        failed_hosts = [r['host'] for r in results if r['status'] not in ['ok', 'dry-run']]
+        console_logger.error(f"Hardening failed for: {', '.join(failed_hosts)}")
+
     return successful_hardenings, failed_hardenings
 
 
