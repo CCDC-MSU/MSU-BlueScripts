@@ -58,6 +58,7 @@ class SystemDiscovery:
             ("services", self._discover_services),
             ("network configuration", self._discover_network),
             ("security tools", self._discover_security_tools),
+            ("user management commands", self._discover_available_commands),
             ("system resources", self._discover_system_resources),
             ("package managers", self._discover_package_managers),
         ]
@@ -130,6 +131,10 @@ class SystemDiscovery:
                 tools = getattr(self.server_info, "security_tools", {}) or {}
                 enabled = sorted([k for k, v in tools.items() if v])
                 return f"installed={enabled}"
+
+            if task_name == "user management commands":
+                cmds = getattr(self.server_info, "available_commands", []) or []
+                return f"available_count={len(cmds)}, sample={cmds[:10]}"
 
             if task_name == "system resources":
                 return (
@@ -452,6 +457,30 @@ class SystemDiscovery:
             security_tools[tool] = result.success and len(result.output) > 0
         
         self.server_info.security_tools = security_tools
+
+    def _discover_available_commands(self):
+        """Discover available user/group management commands"""
+        commands_to_check = [
+            'getent', 'id', 'groups',
+            'useradd', 'usermod', 'userdel',
+            'chpasswd', 'passwd',
+            'groupadd', 'groupmod', 'groupdel', 'gpasswd',
+            'pwck', 'grpck', 'vipw', 'vigr',
+            'adduser', 'deluser', 'addgroup', 'delgroup',
+            'pw'
+        ]
+        available = []
+        seen = set()
+
+        for cmd in commands_to_check:
+            if cmd in seen:
+                continue
+            seen.add(cmd)
+            result = self._run_command(f"command -v {cmd} >/dev/null 2>&1")
+            if result.success:
+                available.append(cmd)
+
+        self.server_info.available_commands = available
     
     def _discover_system_resources(self):
         """Discover system resource information"""

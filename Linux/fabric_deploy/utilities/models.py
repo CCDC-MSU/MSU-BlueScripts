@@ -89,6 +89,9 @@ class ServerInfo:
     # Security Tools
     security_tools: Dict[str, bool] = field(default_factory=dict)
 
+    # User/Group Management Commands
+    available_commands: List[str] = field(default_factory=list)
+
     # System Resources
     memory_info: str = ''
     disk_info: str = ''
@@ -188,6 +191,7 @@ class ServerInfo:
         services = sorted(self.services)
         installed_tools = sorted([name for name, installed in self.security_tools.items() if installed])
         missing_tools = sorted([name for name, installed in self.security_tools.items() if not installed])
+        available_cmds = sorted(self.available_commands or [])
 
         # Network
         open_ports = self.network.open_ports
@@ -221,6 +225,12 @@ class ServerInfo:
                 format_kv("Regular users", f"{self.regular_user_count} ({truncate_list(regular_names)})"),
                 format_kv("System users", f"{len(system_names)} ({truncate_list(system_names)})"),
                 format_kv("PW change req", f"{self.users_requiring_password_change_count} ({truncate_list(pw_change_names)})"),
+            ])
+        )
+
+        sections.append(
+            format_block("User mgmt cmds", [
+                format_kv("Available", truncate_list(available_cmds)),
             ])
         )
 
