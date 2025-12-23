@@ -77,8 +77,9 @@ class ServerInfo:
     os: OSInfo = field(default_factory=OSInfo)
     package_managers: List[str] = field(default_factory=list)
 
-    # User Information
+    # User Information  
     users: List[UserInfo] = field(default_factory=list)
+    groups: List[str] = field(default_factory=list)
 
     # Services
     services: List[str] = field(default_factory=list)
@@ -186,6 +187,7 @@ class ServerInfo:
         regular_names = sorted(self.regular_usernames)
         system_names = sorted([u.username for u in self.users if not u.is_regular_user])
         pw_change_names = sorted([u.username for u in self.users_requiring_password_change])
+        group_names = sorted(self.groups or [])
 
         # Services/security tools
         services = sorted(self.services)
@@ -225,6 +227,7 @@ class ServerInfo:
                 format_kv("Regular users", f"{self.regular_user_count} ({truncate_list(regular_names)})"),
                 format_kv("System users", f"{len(system_names)} ({truncate_list(system_names)})"),
                 format_kv("PW change req", f"{self.users_requiring_password_change_count} ({truncate_list(pw_change_names)})"),
+                format_kv("Groups", f"{len(group_names)} ({truncate_list(group_names)})"),
             ])
         )
 

@@ -109,6 +109,7 @@ def save_discovery_summary(server_info, output_file: str):
             'regular': server_info.regular_user_count,
             'usernames': server_info.usernames
         },
+        'groups': server_info.groups,
         'services_count': len(server_info.services),
         'package_managers': server_info.package_managers,
         'security_tools': server_info.security_tools,

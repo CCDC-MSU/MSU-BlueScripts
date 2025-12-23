@@ -52,13 +52,14 @@ class SystemDiscovery:
         logger.info(f"Starting system discovery for {self.credentials.host}")
         
         discovery_tasks = [
+            ("user management commands", self._discover_available_commands),
             ("basic system info", self._discover_basic_info),
             ("operating system", self._discover_os_info),
             ("users", self._discover_users),
+            ("groups", self._discover_groups),
             ("services", self._discover_services),
             ("network configuration", self._discover_network),
             ("security tools", self._discover_security_tools),
-            ("user management commands", self._discover_available_commands),
             ("system resources", self._discover_system_resources),
             ("package managers", self._discover_package_managers),
         ]
@@ -108,6 +109,10 @@ class SystemDiscovery:
                 users = getattr(self.server_info, "users", []) or []
                 sample = [getattr(u, "username", None) for u in users[:10] if getattr(u, "username", None)]
                 return f"count={len(users)}, sample={sample}"
+
+            if task_name == "groups":
+                groups = getattr(self.server_info, "groups", []) or []
+                return f"count={len(groups)}, sample={groups[:10]}"
 
             if task_name == "services":
                 services = getattr(self.server_info, "services", []) or []
@@ -385,7 +390,55 @@ class SystemDiscovery:
                                     break
         
         self.server_info.users = users
-    
+
+    def _discover_groups(self):
+        """Discover all system groups (not just current user's groups)."""
+        available = set(getattr(self.server_info, "available_commands", []) or [])
+        group_names: List[str] = []
+
+        def parse_group_lines(output: str) -> List[str]:
+            names: List[str] = []
+            for line in output.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                if ':' in line:
+                    # /etc/group or getent group format: name:x:gid:members
+                    names.append(line.split(':', 1)[0])
+                else:
+                    # space-separated names (rare, but keep)
+                    names.extend([part for part in line.split() if part])
+            return names
+
+        # 1) Best: NSS-aware enumeration (Linux, many Unixes)
+        if 'getent' in available:
+            result = self._run_command('getent group')
+            if result.success and result.output:
+                group_names = parse_group_lines(result.output)
+
+        # 2) macOS: dscl lists groups from Directory Services
+        # (local + directory depending on configuration)
+        if not group_names and 'dscl' in available:
+            # dscl . -list /Groups returns group names, one per line
+            result = self._run_command("dscl . -list /Groups 2>/dev/null")
+            if result.success and result.output:
+                group_names = [ln.strip() for ln in result.output.splitlines() if ln.strip()]
+
+        # 3) BSD-ish: /etc/group is authoritative for local groups
+        # (many BSDs do have getent, but if not, fall back)
+        if not group_names:
+            result = self._run_command('cat /etc/group 2>/dev/null')
+            if result.success and result.output:
+                group_names = parse_group_lines(result.output)
+
+        # 4) Optional last resort: try "grep" if cat is restricted (rare)
+        # (Skip unless you have environments that block cat but allow grep)
+
+        if group_names:
+            self.server_info.groups = sorted(set(group_names))
+        else:
+            self.server_info.groups = []
+
     def _discover_services(self):
         """Discover running services"""
         services = []
@@ -467,7 +520,7 @@ class SystemDiscovery:
             'groupadd', 'groupmod', 'groupdel', 'gpasswd',
             'pwck', 'grpck', 'vipw', 'vigr',
             'adduser', 'deluser', 'addgroup', 'delgroup',
-            'pw'
+            'pw','dscl'
         ]
         available = []
         seen = set()
@@ -534,3 +587,25 @@ class SystemDiscovery:
     def os_family(self) -> str:
         """Get the detected OS family"""
         return self._os_family
+
+    # ---- Server action skeletons (to be implemented) ----
+
+    def add_user(self, username: str, password: str) -> None:
+        """Add a new regular user."""
+        raise NotImplementedError("add_user is not implemented yet")
+
+    def add_sudo_user(self, username: str, password: str) -> None:
+        """Add a new user and grant sudo access."""
+        raise NotImplementedError("add_sudo_user is not implemented yet")
+
+    def remove_user(self, username: str) -> None:
+        """Remove a user account."""
+        raise NotImplementedError("remove_user is not implemented yet")
+
+    def remove_user_from_sudoers(self, username: str) -> None:
+        """Remove a user from sudoers/sudo group."""
+        raise NotImplementedError("remove_user_from_sudoers is not implemented yet")
+
+    def get_users_in_group(self, groupname: str) -> List[str]:
+        """Return a list of usernames in the specified group."""
+        raise NotImplementedError("get_users_in_group is not implemented yet")
