@@ -737,18 +737,79 @@ def test_connection(c, host, user=None, password=None):
 
 
 @task
-def test_module(c, module, host_index=0, live=False):
-    """Test individual hardening module"""
+def test_module(c, module, live=False):
+    """Test individual hardening module across all hosts"""
     from test_modules import ModuleTester
-    
+
+    _configure_parallel_logging()
+    console_logger = _get_console_logger()
+
+    console_logger.info("=" * 60)
+    console_logger.info(f"TESTING MODULE: {module} (PARALLEL)")
+    console_logger.info("=" * 60)
+
+    # Parse hosts file
     try:
-        tester = ModuleTester(CONFIG)
-        dry_run = not live
-        success = tester.test_module(module, host_index, dry_run)
-        return success
+        servers = parse_hosts_file('hosts.txt')
     except Exception as e:
-        logger.error(f"Module test failed: {e}")
+        console_logger.error(f"Error parsing hosts file: {e}")
         return False
+
+    if not servers:
+        console_logger.error("No servers found in hosts file")
+        return False
+
+    console_logger.info(f"Found {len(servers)} servers to test")
+    console_logger.info("Logs: logs/test-module/<host>/<timestamp>.log")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dry_run = not live
+
+    def _test_host(server_creds, host_index):
+        host_id = _host_label(server_creds)
+        with _host_log_handler("test-module", host_id, timestamp) as log_path:
+            try:
+                logger.info(f"Starting module test on {server_creds.host}")
+                tester = ModuleTester(CONFIG)
+                success = tester.test_module(module, host_index, dry_run)
+                if not success:
+                    logger.error(f"Module test failed for {server_creds.host}")
+                return {
+                    'host': server_creds.host,
+                    'success': success,
+                    'log_file': str(log_path)
+                }
+            except Exception as e:
+                logger.error(f"Module test failed for {server_creds.host}: {e}")
+                return {
+                    'host': server_creds.host,
+                    'success': False,
+                    'log_file': str(log_path)
+                }
+
+    results = []
+    max_workers = min(16, len(servers)) if servers else 1
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = []
+        for index, server_creds in enumerate(servers):
+            console_logger.info(f"Starting module test on {server_creds.host}")
+            futures.append(executor.submit(_test_host, server_creds, index))
+
+        for future in as_completed(futures):
+            results.append(future.result())
+
+    successful = sum(1 for r in results if r['success'])
+    failed = len(results) - successful
+
+    console_logger.info("=" * 60)
+    console_logger.info("MODULE TEST SUMMARY")
+    console_logger.info("=" * 60)
+    console_logger.info(f"Success rate: {successful}/{len(results)} ({(successful/len(results)*100):.1f}%)")
+    if failed > 0:
+        failed_hosts = [r['host'] for r in results if not r['success']]
+        console_logger.error(f"Module test failed for: {', '.join(failed_hosts)}")
+
+    return failed == 0
 
 
 @task

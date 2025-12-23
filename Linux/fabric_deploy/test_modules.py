@@ -202,7 +202,7 @@ class ModuleTester:
                                 f.write(f"    OS Families: {[f.value for f in action.os_families]}\n")
                             f.write("\n")
                     
-                    print(f"\n{len(actions)} actions ready - details written to: {cmd_file}")
+                    logger.info(f"{len(actions)} actions ready - details written to: {cmd_file}")
                 
                 # Execute module
                 logger.info(f"Executing module {'(DRY RUN)' if dry_run else '(LIVE)'}")
@@ -332,9 +332,14 @@ class ModuleTester:
         """Apply an action with timeout handling"""
         import signal
         import time
+        import threading
         
         def timeout_handler(signum, frame):
             raise TimeoutError(f"Action timed out after {timeout} seconds")
+
+        if threading.current_thread() is not threading.main_thread():
+            logger.warning("Timeout disabled (non-main thread)")
+            return module_instance.apply_action(action)
         
         # Set up timeout for non-dry runs
         original_handler = signal.signal(signal.SIGALRM, timeout_handler)
@@ -395,19 +400,24 @@ class ModuleTester:
             ])
         
         # Display table
-        print("\nExecution Results:")
-        print("=" * 100)
         headers = ["Status", "Description", "Output", "Error"]
-        print(tabulate(table_data, headers=headers, tablefmt="simple"))
+        table = tabulate(table_data, headers=headers, tablefmt="simple")
         
         # Summary
         total = len(results)
         failed_count = total - success_count - already_applied_count
         
-        print(f"\nSummary: {total} commands")
-        print(f"  ✓ Successful: {success_count}")
-        print(f"  • Already Applied: {already_applied_count}")
-        print(f"  ✗ Failed: {failed_count}")
+        summary_lines = [
+            "Execution Results:",
+            "=" * 100,
+            table,
+            "",
+            f"Summary: {total} commands",
+            f"  ✓ Successful: {success_count}",
+            f"  • Already Applied: {already_applied_count}",
+            f"  ✗ Failed: {failed_count}",
+        ]
+        logger.info("\n".join(summary_lines))
 
 def main():
     """Main CLI interface"""
