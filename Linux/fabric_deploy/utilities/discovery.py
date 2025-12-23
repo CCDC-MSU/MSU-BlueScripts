@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from enum import Enum
 from invoke.exceptions import UnexpectedExit
 from .models import ServerCredentials, ServerInfo, OSInfo, UserInfo, NetworkInfo
+from .actions import UserManager
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ class SystemDiscovery:
         self.credentials = credentials
         self.server_info = ServerInfo(hostname=credentials.host, credentials=credentials)
         self._os_family = OSFamily.UNKNOWN.value
+        self.user_manager = UserManager(available_commands = self.server_info.available_commands)
         
     def discover_system(self) -> ServerInfo:
         """Main discovery method - runs all discovery tasks"""
@@ -520,7 +522,7 @@ class SystemDiscovery:
             'groupadd', 'groupmod', 'groupdel', 'gpasswd',
             'pwck', 'grpck', 'vipw', 'vigr',
             'adduser', 'deluser', 'addgroup', 'delgroup',
-            'pw','dscl'
+            'pw','dscl','dseditgroup', 'busybox'
         ]
         available = []
         seen = set()
@@ -587,25 +589,3 @@ class SystemDiscovery:
     def os_family(self) -> str:
         """Get the detected OS family"""
         return self._os_family
-
-    # ---- Server action skeletons (to be implemented) ----
-
-    def add_user(self, username: str, password: str) -> None:
-        """Add a new regular user."""
-        raise NotImplementedError("add_user is not implemented yet")
-
-    def add_sudo_user(self, username: str, password: str) -> None:
-        """Add a new user and grant sudo access."""
-        raise NotImplementedError("add_sudo_user is not implemented yet")
-
-    def remove_user(self, username: str) -> None:
-        """Remove a user account."""
-        raise NotImplementedError("remove_user is not implemented yet")
-
-    def remove_user_from_sudoers(self, username: str) -> None:
-        """Remove a user from sudoers/sudo group."""
-        raise NotImplementedError("remove_user_from_sudoers is not implemented yet")
-
-    def get_users_in_group(self, groupname: str) -> List[str]:
-        """Return a list of usernames in the specified group."""
-        raise NotImplementedError("get_users_in_group is not implemented yet")
