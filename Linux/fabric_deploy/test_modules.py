@@ -171,6 +171,7 @@ class ModuleTester:
                 
                 # Get actions that would be executed
                 actions = module_instance.get_actions()
+                
                 logger.info(f"Found {len(actions)} actions to execute")
                 
                 # Display actions summary (write details to file to reduce noise)

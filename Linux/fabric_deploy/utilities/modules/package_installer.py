@@ -2,438 +2,651 @@
 Package installation module for CCDC framework
 Installs useful packages using the appropriate package manager
 """
-# to-do: might want to thin this list out a bit more
+
 from typing import List, Dict, Set
 from .base import HardeningModule, HardeningCommand
 from ..discovery import OSFamily
 
+PACKAGE_MANAGER_INSTALL_CMD = {
+    # Debian/Ubuntu
+    "apt":      "DEBIAN_FRONTEND=noninteractive apt-get install -y {}",
+
+    # RHEL/CentOS/Fedora
+    "yum":      "yum install -y {}",
+    "dnf":      "dnf install -y {}",
+
+    # SUSE/openSUSE
+    "zypper":   "zypper --non-interactive install {}",
+
+    # Arch
+    "pacman":   "pacman -S {} --noconfirm",
+
+    # Gentoo
+    "emerge":   "emerge --ask=n {}",
+
+    # Alpine
+    "apk":      "apk add {}",
+
+    # FreeBSD
+    "pkg":      "pkg install -y {}",
+
+    # macOS (Homebrew)
+    "brew":     "brew install {}",
+
+    # Snap
+    "snap":     "snap install {}",
+
+    # Flatpak (assumes flathub remote is configured)
+    "flatpak":  "flatpak install -y --noninteractive flathub {}",
+
+    # Slackware
+    "slackpkg": "slackpkg -batch=on -default_answer=y install {}",
+}
 
 class PackageInstallerModule(HardeningModule):
     """Install useful packages for CCDC scenarios"""
-    
+
+    def __init__(self, connection, server_info, os_family):
+        super().__init__(connection, server_info, os_family)
+
+        self.package_manager =  self.pick_a_pm(server_info.package_managers)
+
+        if self.package_manager not in PACKAGE_MANAGER_INSTALL_CMD:
+            print(f"WARNING: Unsupported package manager: {self.package_manager!r}")
+
+    def pick_a_pm(self, package_managers):
+        best_pm = package_managers[0]
+        return best_pm
+
     def get_name(self) -> str:
         return "package_installer"
     
     def get_commands(self) -> List[HardeningCommand]:
-        try:
-            os_family = OSFamily(self.os_family)
-        except ValueError:
-            os_family = OSFamily.UNKNOWN
-        
-        # Get available package managers from server info
-        available_pms = set(self.server_info.package_managers)
-        
-        if os_family in [OSFamily.FREEBSD, OSFamily.OPENBSD, OSFamily.NETBSD, OSFamily.BSDGENERIC]:
-            return self._get_bsd_commands(available_pms)
-        elif os_family == OSFamily.DARWIN:
-            return self._get_macos_commands(available_pms)
-        elif os_family == OSFamily.ALPINE:
-            return self._get_alpine_commands()
-        elif os_family == OSFamily.ARCH:
-            return self._get_arch_commands()
-        else:
-            return self._get_linux_commands(available_pms)
-    
-    def _get_package_categories(self) -> Dict[str, List[str]]:
-        """Define package categories"""
-        return {
-            'security': [
-                'nmap', 'wireshark', 'tcpdump', 'netstat-nat', 'ss', 'lsof',
-                'chkrootkit', 'rkhunter', 'clamav', 'fail2ban', 'aide'
-            ],
-            'monitoring': [
-                'htop', 'iotop', 'nethogs', 'iftop', 'dstat', 'sysstat',
-                'logwatch', 'rsyslog', 'auditd'
-            ],
-            'networking': [
-                'curl', 'wget', 'netcat', 'socat', 'telnet', 'ftp', 'openssh-client',
-                'bind-utils', 'dnsutils', 'traceroute', 'mtr'
-            ],
-            'system': [
-                'vim', 'nano', 'less', 'tree', 'file', 'which', 'locate',
-                'psmisc', 'procps', 'util-linux', 'coreutils'
-            ],
-            'forensics': [
-                'strace', 'ltrace', 'gdb', 'hexdump', 'strings', 'binutils',
-                'sleuthkit', 'volatility'
-            ],
-            'development': [
-                'git', 'make', 'gcc', 'python3', 'python3-pip', 'perl',
-                'build-essential'
-            ]
-        }
-    
-    def _get_linux_package_mappings(self) -> Dict[str, Dict[str, str]]:
-        """Map generic package names to distro-specific names"""
-        return {
-            'apt': {  # Debian/Ubuntu
-                'bind-utils': 'dnsutils',
-                'netstat-nat': 'net-tools',
-                'ss': 'iproute2',
-                'which': 'debianutils',
-                'locate': 'mlocate',
-                'build-essential': 'build-essential',
-                'openssh-client': 'openssh-client'
-            },
-            'yum': {  # RHEL/CentOS 7
-                'dnsutils': 'bind-utils',
-                'net-tools': 'net-tools',
-                'ss': 'iproute',
-                'which': 'which',
-                'locate': 'mlocate',
-                'build-essential': 'gcc gcc-c++ make',
-                'openssh-client': 'openssh-clients'
-            },
-            'dnf': {  # RHEL/CentOS 8+, Fedora
-                'dnsutils': 'bind-utils',
-                'net-tools': 'net-tools',
-                'ss': 'iproute',
-                'which': 'which',
-                'locate': 'mlocate',
-                'build-essential': 'gcc gcc-c++ make',
-                'openssh-client': 'openssh-clients'
-            }
-        }
-    
-    def _get_linux_commands(self, available_pms: Set[str]) -> List[HardeningCommand]:
-        """Commands for Linux systems"""
+        packages_to_install = self._get_linux_package_mappings(self.package_manager)
+        install_cmd_template = PACKAGE_MANAGER_INSTALL_CMD[self.package_manager]
         commands = []
-        package_categories = self._get_package_categories()
-        package_mappings = self._get_linux_package_mappings()
+        for friendly_name in packages_to_install:
+            commands.append(install_cmd_template.format(packages_to_install[friendly_name]))
         
-        # Determine primary package manager
-        pm_info = self._detect_linux_package_manager(available_pms)
-        if not pm_info:
-            return commands
-        
-        pm_cmd, pm_name = pm_info
-        mapping = package_mappings.get(pm_name, {})
-        
-        # Update package lists first (synchronous - this is quick)
-        commands.append(HardeningCommand(
-            command=self._get_update_command(pm_cmd, pm_name),
-            description=f"Update package lists ({pm_name})",
+        command_str = "\n".join(commands)
+        return [HardeningCommand(
+            command=command_str,
+            description="install all required packages",
             requires_sudo=True
-        ))
+        )]
+        # try:
+        #     os_family = OSFamily(self.os_family)
+        # except ValueError:
+        #     os_family = OSFamily.UNKNOWN
         
-        # Create background installation script
-        commands.append(HardeningCommand(
-            command="mkdir -p /tmp/ccdc_install && touch /tmp/ccdc_install/install.log",
-            description="Create package installation directory",
-            check_command="test -d /tmp/ccdc_install && echo exists",
-            requires_sudo=True
-        ))
+        # # Get available package managers from server info
+        # available_pms = set(self.server_info.package_managers)
         
-        # Build comprehensive package list for background installation
-        all_packages = []
-        for category, packages in package_categories.items():
-            for pkg in packages:
-                mapped_pkg = mapping.get(pkg, pkg)
-                if ' ' in mapped_pkg:  # Handle compound packages
-                    all_packages.extend(mapped_pkg.split())
-                else:
-                    all_packages.append(mapped_pkg)
-        
-        # Remove duplicates while preserving order
-        unique_packages = list(dict.fromkeys(all_packages))
-        pkg_list = ' '.join(unique_packages)
-        
-        # Create background installation script
-        install_script = f'''#!/bin/bash
-# CCDC Background Package Installation Script
-LOG_FILE="/tmp/ccdc_install/install.log"
-STATUS_FILE="/tmp/ccdc_install/status"
-PID_FILE="/tmp/ccdc_install/install.pid"
+        # if os_family in [OSFamily.FREEBSD, OSFamily.OPENBSD, OSFamily.NETBSD, OSFamily.BSDGENERIC]:
+        #     return self._get_bsd_commands(available_pms)
+        # elif os_family == OSFamily.DARWIN:
+        #     return self._get_macos_commands(available_pms)
+        # elif os_family == OSFamily.ALPINE:
+        #     return self._get_alpine_commands()
+        # elif os_family == OSFamily.ARCH:
+        #     return self._get_arch_commands()
+        # else:
+        #     return self._get_linux_commands(available_pms)
 
-echo "RUNNING" > "$STATUS_FILE"
-echo $$ > "$PID_FILE"
+    def _get_linux_package_mappings(self, package_manager) -> Dict[str, Dict[str, str]]:
+        """
+        Map your generic package names (the keys) to the package name used by each
+        package manager/distro ecosystem (the values).
 
-echo "$(date): Starting background package installation" >> "$LOG_FILE"
-echo "$(date): Installing packages: {pkg_list}" >> "$LOG_FILE"
+        Notes:
+        - snap/flatpak are app-centric; many low-level admin tools are not consistently
+            available. For snap I mapped the ones I could confirm; the rest fall back to
+            the generic name (you may want to validate availability at runtime).
+        - pkg here is aligned to FreeBSD ports/pkgng naming where it differs.
+        - brew is aligned to Homebrew; some formulae are Linux-only (Homebrew shows bottles).
+        """
+        all_generic = [
+            # security
+            "tcpdump", "ss", "rkhunter", "fail2ban", "aide",
+            # monitoring
+            "rsyslog", "auditd",
+            # networking
+            "curl",
+            # system
+            "vim", "nano", "less", "tree", "file", "which",
+            "psmisc", "procps", "util-linux", "coreutils",
+            # forensics
+            "strace", "strings",
+            # development
+            "python3",
+        ]
 
-# Redirect all output to log file
-exec 1>> "$LOG_FILE" 2>&1
+        def identity_map(overrides: Dict[str, str]) -> Dict[str, str]:
+            m = {k: k for k in all_generic}
+            m.update(overrides)
+            return m
 
-echo "$(date): Running {pm_cmd} install -y {pkg_list}"
-if {pm_cmd} install -y {pkg_list}; then
-    echo "$(date): Package installation completed successfully"
-    echo "COMPLETED" > "$STATUS_FILE"
-else
-    echo "$(date): Package installation failed with exit code $?"
-    echo "FAILED" > "$STATUS_FILE"
-fi
+        package_mappings = {
+            # Debian/Ubuntu
+            "apt": identity_map({
+                "ss": "iproute2",
+                "which": "debianutils",
+                "strings": "binutils",
+                # auditd is already "auditd" on Debian/Ubuntu
+            }),
 
-rm -f "$PID_FILE"
-echo "$(date): Background installation finished" >> "$LOG_FILE"
-'''
-        
-        commands.append(HardeningCommand(
-            command=f'cat > /tmp/ccdc_install/install_packages.sh << "EOF"\n{install_script}\nEOF',
-            description="Create background package installation script",
-            requires_sudo=True
-        ))
-        
-        # Make script executable
-        commands.append(HardeningCommand(
-            command="chmod +x /tmp/ccdc_install/install_packages.sh",
-            description="Make installation script executable",
-            requires_sudo=True
-        ))
-        
-        # Start background installation (non-blocking)
-        commands.append(HardeningCommand(
-            command="nohup /tmp/ccdc_install/install_packages.sh </dev/null >/dev/null 2>&1 & echo 'Background installation started'",
-            description=f"Start background package installation ({pm_name})",
-            requires_sudo=True
-        ))
-        
-        # Add status check command
-        commands.append(HardeningCommand(
-            command='echo "Package installation status: $(cat /tmp/ccdc_install/status 2>/dev/null || echo UNKNOWN)"',
-            description="Show initial package installation status",
-            requires_sudo=False
-        ))
-        
-        return commands
-    
-    def _get_bsd_commands(self, available_pms: Set[str]) -> List[HardeningCommand]:
-        """Commands for BSD systems"""
-        commands = []
-        
-        # BSD package categories
-        bsd_packages = {
-            'security': ['nmap', 'wireshark', 'tcpdump', 'lsof', 'chkrootkit', 'clamav'],
-            'monitoring': ['htop', 'iotop', 'iftop', 'sysstat'],
-            'networking': ['curl', 'wget', 'netcat', 'socat', 'bind-tools', 'traceroute', 'mtr'],
-            'system': ['vim', 'nano', 'tree', 'bash', 'zsh'],
-            'development': ['git', 'gmake', 'gcc', 'python3', 'perl5']
+            # RHEL/CentOS (yum, esp. 7.x)
+            "yum": identity_map({
+                "ss": "iproute",
+                "auditd": "audit",
+                "procps": "procps-ng",
+                "vim": "vim-enhanced",
+                "strings": "binutils",
+            }),
+
+            # RHEL/CentOS 8+/Fedora (dnf)
+            "dnf": identity_map({
+                "ss": "iproute",
+                "auditd": "audit",
+                "procps": "procps-ng",
+                "vim": "vim-enhanced",
+                "strings": "binutils",
+            }),
+
+            # openSUSE/SLES
+            "zypper": identity_map({
+                "ss": "iproute2",
+                "auditd": "audit",
+                "strings": "binutils",
+            }),
+
+            # Arch/Manjaro
+            "pacman": identity_map({
+                "ss": "iproute2",
+                "auditd": "audit",
+                "procps": "procps-ng",
+                "python3": "python",
+                "strings": "binutils",
+            }),
+
+            # Gentoo (category/package atoms)
+            "emerge": identity_map({
+                "tcpdump":  "net-analyzer/tcpdump",
+                "ss":       "sys-apps/iproute2",
+                "rkhunter": "app-forensics/rkhunter",
+                "fail2ban": "net-analyzer/fail2ban",
+                "aide":     "app-forensics/aide",
+
+                "rsyslog":  "app-admin/rsyslog",
+                "auditd":   "sys-process/audit",
+
+                "curl":     "net-misc/curl",
+
+                "vim":      "app-editors/vim",
+                "nano":     "app-editors/nano",
+                "less":     "sys-apps/less",
+                "tree":     "app-text/tree",
+                "file":     "sys-apps/file",
+                "which":    "sys-apps/which",
+                "psmisc":   "sys-process/psmisc",
+                "procps":   "sys-process/procps",
+                "util-linux":"sys-apps/util-linux",
+                "coreutils":"sys-apps/coreutils",
+
+                "strace":   "dev-debug/strace",
+                "strings":  "sys-devel/binutils",
+
+                "python3":  "dev-lang/python",
+            }),
+
+            # Alpine (apk)
+            "apk": identity_map({
+                "ss": "iproute2-ss",
+                "auditd": "audit",
+                "strings": "binutils",
+            }),
+
+            # FreeBSD (pkgng) — best-effort equivalents
+            "pkg": identity_map({
+                # many are available as ports; a few are base-system on FreeBSD
+                # (you may choose to skip installing those).
+                "fail2ban": "py311-fail2ban",  # commonly used on FreeBSD 14.x
+                "strings": "binutils",
+                "ss": "sockstat",              # closest built-in equivalent (no iproute2)
+                "auditd": "auditd",            # base-system service on FreeBSD
+                "python3": "python3",
+            }),
+
+            # Homebrew (brew) — best-effort (some formulae are Linux-only)
+            "brew": identity_map({
+                "ss": "iproute2mac",
+                "procps": "procps",
+                "python3": "python",
+                "strings": "binutils",
+            }),
+
+            # Snap — only a few of these have well-known snaps; others vary by publisher.
+            "snap": identity_map({
+                "tcpdump": "tcpdump",
+                "curl": "curl",
+                "coreutils": "rust-coreutils",
+                "strace": "strace-static",
+                # leave the rest as identity (may or may not exist in the Snap Store)
+            }),
+
+            # Flatpak — generally not used for these low-level CLI/admin tools.
+            # Keep identity for completeness; you may want to treat this manager as "unsupported"
+            # for this package set and fall back to the distro manager.
+            "flatpak": identity_map({}),
+
+            # Slackware (slackpkg)
+            "slackpkg": identity_map({
+                "ss": "iproute2",
+                "procps": "procps-ng",
+                "auditd": "audit",     # often via SlackBuilds; not always in the base set
+                "strings": "binutils",
+            }),
         }
-        
-        if 'pkg' in available_pms:  # FreeBSD
-            # Update package repository (quick operation)
-            commands.append(HardeningCommand(
-                command="pkg update",
-                description="Update FreeBSD package repository",
-                requires_sudo=True
-            ))
-            
-            # Create background installation directory
-            commands.append(HardeningCommand(
-                command="mkdir -p /tmp/ccdc_install && touch /tmp/ccdc_install/install.log",
-                description="Create package installation directory",
-                check_command="test -d /tmp/ccdc_install && echo exists",
-                requires_sudo=True
-            ))
-            
-            # Build comprehensive package list
-            all_packages = []
-            for packages in bsd_packages.values():
-                all_packages.extend(packages)
-            pkg_list = ' '.join(all_packages)
-            
-            # Create background installation script for FreeBSD
-            install_script = f'''#!/bin/sh
-# CCDC Background Package Installation Script (FreeBSD)
-LOG_FILE="/tmp/ccdc_install/install.log"
-STATUS_FILE="/tmp/ccdc_install/status"
-PID_FILE="/tmp/ccdc_install/install.pid"
 
-echo "RUNNING" > "$STATUS_FILE"
-echo $$ > "$PID_FILE"
+        return package_mappings.get(package_manager, {})
 
-echo "$(date): Starting FreeBSD background package installation" >> "$LOG_FILE"
-echo "$(date): Installing packages: {pkg_list}" >> "$LOG_FILE"
 
-# Redirect all output to log file
-exec 1>> "$LOG_FILE" 2>&1
-
-echo "$(date): Running pkg install -y {pkg_list}"
-if pkg install -y {pkg_list}; then
-    echo "$(date): Package installation completed successfully"
-    echo "COMPLETED" > "$STATUS_FILE"
-else
-    echo "$(date): Package installation failed with exit code $?"
-    echo "FAILED" > "$STATUS_FILE"
-fi
-
-rm -f "$PID_FILE"
-echo "$(date): Background installation finished" >> "$LOG_FILE"
-'''
-            
-            commands.append(HardeningCommand(
-                command=f'cat > /tmp/ccdc_install/install_packages.sh << "EOF"\n{install_script}\nEOF',
-                description="Create background package installation script",
-                requires_sudo=True
-            ))
-            
-            commands.append(HardeningCommand(
-                command="chmod +x /tmp/ccdc_install/install_packages.sh",
-                description="Make installation script executable", 
-                requires_sudo=True
-            ))
-            
-            commands.append(HardeningCommand(
-                command="nohup /tmp/ccdc_install/install_packages.sh </dev/null >/dev/null 2>&1 & echo 'Background installation started'",
-                description="Start background package installation (FreeBSD)",
-                requires_sudo=True
-            ))
-            
-        elif any(pm in available_pms for pm in ['pkg_add', 'pkg_info']):  # OpenBSD/NetBSD
-            # For OpenBSD/NetBSD, install essential packages (these are usually quick)
-            essential_packages = ['curl', 'wget', 'vim', 'htop', 'git', 'nmap']
-            
-            # Create installation tracking
-            commands.append(HardeningCommand(
-                command="mkdir -p /tmp/ccdc_install && echo 'RUNNING' > /tmp/ccdc_install/status",
-                description="Create package installation directory",
-                requires_sudo=True
-            ))
-            
-            # Install essential packages in background
-            pkg_list = ' '.join(essential_packages)
-            install_script = f'''#!/bin/sh
-LOG_FILE="/tmp/ccdc_install/install.log"
-STATUS_FILE="/tmp/ccdc_install/status"
-
-echo "$(date): Starting OpenBSD/NetBSD package installation" >> "$LOG_FILE"
-failed=0
-for pkg in {' '.join(essential_packages)}; do
-    echo "$(date): Installing $pkg" >> "$LOG_FILE"
-    if ! pkg_add "$pkg" >> "$LOG_FILE" 2>&1; then
-        echo "$(date): Failed to install $pkg" >> "$LOG_FILE"
-        failed=1
-    fi
-done
-
-if [ $failed -eq 0 ]; then
-    echo "COMPLETED" > "$STATUS_FILE"
-else
-    echo "PARTIAL" > "$STATUS_FILE"
-fi
-echo "$(date): Installation finished" >> "$LOG_FILE"
-'''
-            
-            commands.append(HardeningCommand(
-                command=f'cat > /tmp/ccdc_install/install_packages.sh << "EOF"\n{install_script}\nEOF && chmod +x /tmp/ccdc_install/install_packages.sh',
-                description="Create BSD package installation script",
-                requires_sudo=True
-            ))
-            
-            commands.append(HardeningCommand(
-                command="nohup /tmp/ccdc_install/install_packages.sh </dev/null >/dev/null 2>&1 & echo 'Background installation started'",
-                description="Start background package installation (OpenBSD/NetBSD)",
-                requires_sudo=True
-            ))
-        
-        # Add status check command for BSD systems  
-        commands.append(HardeningCommand(
-            command='echo "Package installation status: $(cat /tmp/ccdc_install/status 2>/dev/null || echo UNKNOWN)"',
-            description="Show initial package installation status",
-            requires_sudo=False
-        ))
-        
-        return commands
     
-    def _get_macos_commands(self, available_pms: Set[str]) -> List[HardeningCommand]:
-        """Commands for macOS systems"""
-        commands = []
+#     def _get_package_categories(self) -> Dict[str, List[str]]:
+#         """Define package categories"""
+#         return {
+#             'security': [
+#                 'tcpdump', 'ss', 'rkhunter', 'fail2ban', 'aide'
+#             ],
+#             'monitoring': [
+#                 'rsyslog', 'auditd'
+#             ],
+#             'networking': [
+#                 'curl'
+#             ],
+#             'system': [
+#                 'vim', 'nano', 'less', 'tree', 'file', 'which',
+#                 'psmisc', 'procps', 'util-linux', 'coreutils'
+#             ],
+#             'forensics': [
+#                 'strace', 'strings'
+#             ],
+#             'development': [
+#                'python3'
+#             ]
+#         }
+    
+#     def _get_linux_package_mappings(self) -> Dict[str, Dict[str, str]]:
+#         """Map generic package names to distro-specific names"""
+#         return {
+#             'apt': {  # Debian/Ubuntu
+#                 'bind-utils': 'dnsutils',
+#                 'netstat-nat': 'net-tools',
+#                 'ss': 'iproute2',
+#                 'which': 'debianutils',
+#                 'locate': 'mlocate',
+#                 'build-essential': 'build-essential',
+#                 'openssh-client': 'openssh-client'
+#             },
+#             'yum': {  # RHEL/CentOS 7
+#                 'dnsutils': 'bind-utils',
+#                 'net-tools': 'net-tools',
+#                 'ss': 'iproute',
+#                 'which': 'which',
+#                 'locate': 'mlocate',
+#                 'build-essential': 'gcc gcc-c++ make',
+#                 'openssh-client': 'openssh-clients'
+#             },
+#             'dnf': {  # RHEL/CentOS 8+, Fedora
+#                 'dnsutils': 'bind-utils',
+#                 'net-tools': 'net-tools',
+#                 'ss': 'iproute',
+#                 'which': 'which',
+#                 'locate': 'mlocate',
+#                 'build-essential': 'gcc gcc-c++ make',
+#                 'openssh-client': 'openssh-clients'
+#             }
+#         }
+    
+#     def _get_linux_commands(self, available_pms: Set[str]) -> List[HardeningCommand]:
+#         """Commands for Linux systems"""
+#         commands = []
+#         package_categories = self._get_package_categories()
+#         package_mappings = self._get_linux_package_mappings()
         
-        if 'brew' in available_pms:
-            # Homebrew packages for macOS
-            macos_packages = {
-                'security': ['nmap', 'wireshark', 'clamav'],
-                'monitoring': ['htop', 'iftop'],
-                'networking': ['curl', 'wget', 'netcat', 'socat', 'bind', 'traceroute', 'mtr'],
-                'system': ['vim', 'tree', 'watch', 'gnu-sed', 'gnu-tar'],
-                'development': ['git', 'make', 'gcc', 'python3']
-            }
+#         # Determine primary package manager
+#         pm_info = self._detect_linux_package_manager(available_pms)
+#         if not pm_info:
+#             return commands
+        
+#         pm_cmd, pm_name = pm_info
+#         mapping = package_mappings.get(pm_name, {})
+        
+#         # Update package lists first (synchronous - this is quick)
+#         commands.append(HardeningCommand(
+#             command=self._get_update_command(pm_cmd, pm_name),
+#             description=f"Update package lists ({pm_name})",
+#             requires_sudo=True
+#         ))
+        
+#         # Create background installation script
+#         commands.append(HardeningCommand(
+#             command="mkdir -p /tmp/ccdc_install && touch /tmp/ccdc_install/install.log",
+#             description="Create package installation directory",
+#             check_command="test -d /tmp/ccdc_install && echo exists",
+#             requires_sudo=True
+#         ))
+        
+#         # Build comprehensive package list for background installation
+#         all_packages = []
+#         for category, packages in package_categories.items():
+#             for pkg in packages:
+#                 mapped_pkg = mapping.get(pkg, pkg)
+#                 if ' ' in mapped_pkg:  # Handle compound packages
+#                     all_packages.extend(mapped_pkg.split())
+#                 else:
+#                     all_packages.append(mapped_pkg)
+        
+#         # Remove duplicates while preserving order
+#         unique_packages = list(dict.fromkeys(all_packages))
+#         pkg_list = ' '.join(unique_packages)
+        
+#         # Create background installation script
+#         install_script = f'''#!/bin/bash
+# # CCDC Background Package Installation Script
+# LOG_FILE="/tmp/ccdc_install/install.log"
+# STATUS_FILE="/tmp/ccdc_install/status"
+# PID_FILE="/tmp/ccdc_install/install.pid"
+
+# echo "RUNNING" > "$STATUS_FILE"
+# echo $$ > "$PID_FILE"
+
+# echo "$(date): Starting background package installation" >> "$LOG_FILE"
+# echo "$(date): Installing packages: {pkg_list}" >> "$LOG_FILE"
+
+# # Redirect all output to log file
+# exec 1>> "$LOG_FILE" 2>&1
+
+# echo "$(date): Running {pm_cmd} install -y {pkg_list}"
+# if {pm_cmd} install -y {pkg_list}; then
+#     echo "$(date): Package installation completed successfully"
+#     echo "COMPLETED" > "$STATUS_FILE"
+# else
+#     echo "$(date): Package installation failed with exit code $?"
+#     echo "FAILED" > "$STATUS_FILE"
+# fi
+
+# rm -f "$PID_FILE"
+# echo "$(date): Background installation finished" >> "$LOG_FILE"
+# '''
+        
+#         commands.append(HardeningCommand(
+#             command=f'cat > /tmp/ccdc_install/install_packages.sh << "EOF"\n{install_script}\nEOF',
+#             description="Create background package installation script",
+#             requires_sudo=True
+#         ))
+        
+#         # Make script executable
+#         commands.append(HardeningCommand(
+#             command="chmod +x /tmp/ccdc_install/install_packages.sh",
+#             description="Make installation script executable",
+#             requires_sudo=True
+#         ))
+        
+#         # Start background installation (non-blocking)
+#         commands.append(HardeningCommand(
+#             command="nohup /tmp/ccdc_install/install_packages.sh </dev/null >/dev/null 2>&1 & echo 'Background installation started'",
+#             description=f"Start background package installation ({pm_name})",
+#             requires_sudo=True
+#         ))
+        
+#         # Add status check command
+#         commands.append(HardeningCommand(
+#             command='echo "Package installation status: $(cat /tmp/ccdc_install/status 2>/dev/null || echo UNKNOWN)"',
+#             description="Show initial package installation status",
+#             requires_sudo=False
+#         ))
+        
+#         return commands
+    
+#     def _get_bsd_commands(self, available_pms: Set[str]) -> List[HardeningCommand]:
+#         """Commands for BSD systems"""
+#         commands = []
+        
+#         # BSD package categories
+#         bsd_packages = {
+#             'security': ['nmap', 'wireshark', 'tcpdump', 'lsof', 'chkrootkit', 'clamav'],
+#             'monitoring': ['htop', 'iotop', 'iftop', 'sysstat'],
+#             'networking': ['curl', 'wget', 'netcat', 'socat', 'bind-tools', 'traceroute', 'mtr'],
+#             'system': ['vim', 'nano', 'tree', 'bash', 'zsh'],
+#             'development': ['git', 'gmake', 'gcc', 'python3', 'perl5']
+#         }
+        
+#         if 'pkg' in available_pms:  # FreeBSD
+#             # Update package repository (quick operation)
+#             commands.append(HardeningCommand(
+#                 command="pkg update",
+#                 description="Update FreeBSD package repository",
+#                 requires_sudo=True
+#             ))
             
-            # Update Homebrew
-            commands.append(HardeningCommand(
-                command="brew update",
-                description="Update Homebrew package lists",
-                requires_sudo=False
-            ))
+#             # Create background installation directory
+#             commands.append(HardeningCommand(
+#                 command="mkdir -p /tmp/ccdc_install && touch /tmp/ccdc_install/install.log",
+#                 description="Create package installation directory",
+#                 check_command="test -d /tmp/ccdc_install && echo exists",
+#                 requires_sudo=True
+#             ))
             
-            # Install packages
-            for category, packages in macos_packages.items():
-                pkg_list = ' '.join(packages)
-                commands.append(HardeningCommand(
-                    command=f"brew install {pkg_list}",
-                    description=f"Install {category} packages (Homebrew)",
-                    requires_sudo=False
-                ))
-        else:
-            # Install Homebrew first if not available
-            commands.append(HardeningCommand(
-                command='/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"',
-                description="Install Homebrew package manager",
-                requires_sudo=False
-            ))
+#             # Build comprehensive package list
+#             all_packages = []
+#             for packages in bsd_packages.values():
+#                 all_packages.extend(packages)
+#             pkg_list = ' '.join(all_packages)
+            
+#             # Create background installation script for FreeBSD
+#             install_script = f'''#!/bin/sh
+# # CCDC Background Package Installation Script (FreeBSD)
+# LOG_FILE="/tmp/ccdc_install/install.log"
+# STATUS_FILE="/tmp/ccdc_install/status"
+# PID_FILE="/tmp/ccdc_install/install.pid"
+
+# echo "RUNNING" > "$STATUS_FILE"
+# echo $$ > "$PID_FILE"
+
+# echo "$(date): Starting FreeBSD background package installation" >> "$LOG_FILE"
+# echo "$(date): Installing packages: {pkg_list}" >> "$LOG_FILE"
+
+# # Redirect all output to log file
+# exec 1>> "$LOG_FILE" 2>&1
+
+# echo "$(date): Running pkg install -y {pkg_list}"
+# if pkg install -y {pkg_list}; then
+#     echo "$(date): Package installation completed successfully"
+#     echo "COMPLETED" > "$STATUS_FILE"
+# else
+#     echo "$(date): Package installation failed with exit code $?"
+#     echo "FAILED" > "$STATUS_FILE"
+# fi
+
+# rm -f "$PID_FILE"
+# echo "$(date): Background installation finished" >> "$LOG_FILE"
+# '''
+            
+#             commands.append(HardeningCommand(
+#                 command=f'cat > /tmp/ccdc_install/install_packages.sh << "EOF"\n{install_script}\nEOF',
+#                 description="Create background package installation script",
+#                 requires_sudo=True
+#             ))
+            
+#             commands.append(HardeningCommand(
+#                 command="chmod +x /tmp/ccdc_install/install_packages.sh",
+#                 description="Make installation script executable", 
+#                 requires_sudo=True
+#             ))
+            
+#             commands.append(HardeningCommand(
+#                 command="nohup /tmp/ccdc_install/install_packages.sh </dev/null >/dev/null 2>&1 & echo 'Background installation started'",
+#                 description="Start background package installation (FreeBSD)",
+#                 requires_sudo=True
+#             ))
+            
+#         elif any(pm in available_pms for pm in ['pkg_add', 'pkg_info']):  # OpenBSD/NetBSD
+#             # For OpenBSD/NetBSD, install essential packages (these are usually quick)
+#             essential_packages = ['curl', 'wget', 'vim', 'htop', 'git', 'nmap']
+            
+#             # Create installation tracking
+#             commands.append(HardeningCommand(
+#                 command="mkdir -p /tmp/ccdc_install && echo 'RUNNING' > /tmp/ccdc_install/status",
+#                 description="Create package installation directory",
+#                 requires_sudo=True
+#             ))
+            
+#             # Install essential packages in background
+#             pkg_list = ' '.join(essential_packages)
+#             install_script = f'''#!/bin/sh
+# LOG_FILE="/tmp/ccdc_install/install.log"
+# STATUS_FILE="/tmp/ccdc_install/status"
+
+# echo "$(date): Starting OpenBSD/NetBSD package installation" >> "$LOG_FILE"
+# failed=0
+# for pkg in {' '.join(essential_packages)}; do
+#     echo "$(date): Installing $pkg" >> "$LOG_FILE"
+#     if ! pkg_add "$pkg" >> "$LOG_FILE" 2>&1; then
+#         echo "$(date): Failed to install $pkg" >> "$LOG_FILE"
+#         failed=1
+#     fi
+# done
+
+# if [ $failed -eq 0 ]; then
+#     echo "COMPLETED" > "$STATUS_FILE"
+# else
+#     echo "PARTIAL" > "$STATUS_FILE"
+# fi
+# echo "$(date): Installation finished" >> "$LOG_FILE"
+# '''
+            
+#             commands.append(HardeningCommand(
+#                 command=f'cat > /tmp/ccdc_install/install_packages.sh << "EOF"\n{install_script}\nEOF && chmod +x /tmp/ccdc_install/install_packages.sh',
+#                 description="Create BSD package installation script",
+#                 requires_sudo=True
+#             ))
+            
+#             commands.append(HardeningCommand(
+#                 command="nohup /tmp/ccdc_install/install_packages.sh </dev/null >/dev/null 2>&1 & echo 'Background installation started'",
+#                 description="Start background package installation (OpenBSD/NetBSD)",
+#                 requires_sudo=True
+#             ))
         
-        return commands
+#         # Add status check command for BSD systems  
+#         commands.append(HardeningCommand(
+#             command='echo "Package installation status: $(cat /tmp/ccdc_install/status 2>/dev/null || echo UNKNOWN)"',
+#             description="Show initial package installation status",
+#             requires_sudo=False
+#         ))
+        
+#         return commands
     
-    def _get_alpine_commands(self) -> List[HardeningCommand]:
-        """Commands for Alpine Linux"""
-        commands = []
+#     def _get_macos_commands(self, available_pms: Set[str]) -> List[HardeningCommand]:
+#         """Commands for macOS systems"""
+#         commands = []
         
-        alpine_packages = {
-            'security': ['nmap', 'tcpdump', 'lsof', 'clamav'],
-            'monitoring': ['htop', 'iotop'],
-            'networking': ['curl', 'wget', 'netcat-openbsd', 'socat', 'bind-tools'],
-            'system': ['vim', 'nano', 'tree', 'bash'],
-            'development': ['git', 'make', 'gcc', 'python3', 'py3-pip']
-        }
+#         if 'brew' in available_pms:
+#             # Homebrew packages for macOS
+#             macos_packages = {
+#                 'security': ['nmap', 'wireshark', 'clamav'],
+#                 'monitoring': ['htop', 'iftop'],
+#                 'networking': ['curl', 'wget', 'netcat', 'socat', 'bind', 'traceroute', 'mtr'],
+#                 'system': ['vim', 'tree', 'watch', 'gnu-sed', 'gnu-tar'],
+#                 'development': ['git', 'make', 'gcc', 'python3']
+#             }
+            
+#             # Update Homebrew
+#             commands.append(HardeningCommand(
+#                 command="brew update",
+#                 description="Update Homebrew package lists",
+#                 requires_sudo=False
+#             ))
+            
+#             # Install packages
+#             for category, packages in macos_packages.items():
+#                 pkg_list = ' '.join(packages)
+#                 commands.append(HardeningCommand(
+#                     command=f"brew install {pkg_list}",
+#                     description=f"Install {category} packages (Homebrew)",
+#                     requires_sudo=False
+#                 ))
+#         else:
+#             # Install Homebrew first if not available
+#             commands.append(HardeningCommand(
+#                 command='/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"',
+#                 description="Install Homebrew package manager",
+#                 requires_sudo=False
+#             ))
         
-        # Update package index
-        commands.append(HardeningCommand(
-            command="apk update",
-            description="Update Alpine package index",
-            requires_sudo=True
-        ))
-        
-        # Install packages
-        for category, packages in alpine_packages.items():
-            pkg_list = ' '.join(packages)
-            commands.append(HardeningCommand(
-                command=f"apk add {pkg_list}",
-                description=f"Install {category} packages (Alpine)",
-                requires_sudo=True
-            ))
-        
-        return commands
+#         return commands
     
-    def _get_arch_commands(self) -> List[HardeningCommand]:
-        """Commands for Arch Linux"""
-        commands = []
+#     def _get_alpine_commands(self) -> List[HardeningCommand]:
+#         """Commands for Alpine Linux"""
+#         commands = []
         
-        arch_packages = {
-            'security': ['nmap', 'wireshark-qt', 'tcpdump', 'lsof', 'chkrootkit', 'rkhunter', 'clamav'],
-            'monitoring': ['htop', 'iotop', 'nethogs', 'iftop', 'sysstat'],
-            'networking': ['curl', 'wget', 'gnu-netcat', 'socat', 'bind-tools', 'traceroute', 'mtr'],
-            'system': ['vim', 'nano', 'tree', 'which', 'locate', 'psmisc'],
-            'development': ['git', 'make', 'gcc', 'python', 'python-pip']
-        }
+#         alpine_packages = {
+#             'security': ['nmap', 'tcpdump', 'lsof', 'clamav'],
+#             'monitoring': ['htop', 'iotop'],
+#             'networking': ['curl', 'wget', 'netcat-openbsd', 'socat', 'bind-tools'],
+#             'system': ['vim', 'nano', 'tree', 'bash'],
+#             'development': ['git', 'make', 'gcc', 'python3', 'py3-pip']
+#         }
         
-        # Update package database
-        commands.append(HardeningCommand(
-            command="pacman -Sy",
-            description="Update Arch package database",
-            requires_sudo=True
-        ))
+#         # Update package index
+#         commands.append(HardeningCommand(
+#             command="apk update",
+#             description="Update Alpine package index",
+#             requires_sudo=True
+#         ))
         
-        # Install packages
-        for category, packages in arch_packages.items():
-            pkg_list = ' '.join(packages)
-            commands.append(HardeningCommand(
-                command=f"pacman -S --noconfirm {pkg_list}",
-                description=f"Install {category} packages (Arch)",
-                requires_sudo=True
-            ))
+#         # Install packages
+#         for category, packages in alpine_packages.items():
+#             pkg_list = ' '.join(packages)
+#             commands.append(HardeningCommand(
+#                 command=f"apk add {pkg_list}",
+#                 description=f"Install {category} packages (Alpine)",
+#                 requires_sudo=True
+#             ))
         
-        return commands
+#         return commands
     
-    def _detect_linux_package_manager(self, available_pms: Set[str]) -> tuple:
+#     def _get_arch_commands(self) -> List[HardeningCommand]:
+#         """Commands for Arch Linux"""
+#         commands = []
+        
+#         arch_packages = {
+#             'security': ['nmap', 'wireshark-qt', 'tcpdump', 'lsof', 'chkrootkit', 'rkhunter', 'clamav'],
+#             'monitoring': ['htop', 'iotop', 'nethogs', 'iftop', 'sysstat'],
+#             'networking': ['curl', 'wget', 'gnu-netcat', 'socat', 'bind-tools', 'traceroute', 'mtr'],
+#             'system': ['vim', 'nano', 'tree', 'which', 'locate', 'psmisc'],
+#             'development': ['git', 'make', 'gcc', 'python', 'python-pip']
+#         }
+        
+#         # Update package database
+#         commands.append(HardeningCommand(
+#             command="pacman -Sy",
+#             description="Update Arch package database",
+#             requires_sudo=True
+#         ))
+        
+#         # Install packages
+#         for category, packages in arch_packages.items():
+#             pkg_list = ' '.join(packages)
+#             commands.append(HardeningCommand(
+#                 command=f"pacman -S --noconfirm {pkg_list}",
+#                 description=f"Install {category} packages (Arch)",
+#                 requires_sudo=True
+#             ))
+        
+#         return commands
+    
+#     def _detect_linux_package_manager(self, available_pms: Set[str]) -> tuple:
         """Detect the primary package manager for Linux systems"""
         # Priority order for package managers
         pm_priority = [
