@@ -499,19 +499,19 @@ class SystemDiscovery:
     
     def _discover_security_tools(self):
         """Discover installed security tools"""
-        security_tools = {}
+        critical_tools = {}
         
         # Common security tools to check
         tools_to_check = [
-            'iptables', 'fail2ban', 'rkhunter', 'aide', 'tripwire', 'lynis',
+            'iptables', 'auditctl', 'rsyslogd'
         ]
         
         for tool in tools_to_check:
             # Check if tool is installed
             result = self._run_command(f'which {tool} 2>/dev/null || command -v {tool} 2>/dev/null')
-            security_tools[tool] = result.success and len(result.output) > 0
+            critical_tools[tool] = result.success and len(result.output) > 0
         
-        self.server_info.security_tools = security_tools
+        self.server_info.security_tools = critical_tools
 
     def _discover_available_commands(self):
         """Discover available user/group management commands"""
@@ -565,8 +565,8 @@ class SystemDiscovery:
         # Common package managers
         pm_commands = {
             'apt':      'apt-get --version',
-            'yum':      'yum --version',
             'dnf':      'dnf --version',
+            'yum':      'yum --version',
             'zypper':   'zypper --version', 
             'pacman':   'pacman --version',
             'emerge':   'emerge --version',
