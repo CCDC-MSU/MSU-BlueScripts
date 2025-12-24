@@ -4,7 +4,7 @@ Creates and manages the scan-agent account for security operations
 Supports Linux, BSD, and Unix systems
 """
 # TODO: make a restricted user, create a new user called restricteddawg assign rbash as their shell
-# TODO: add a way to check that we have passwordless sudo
+# TODO: echo "%<groupname> ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers to allow no password sudo through this account
 
 from typing import List
 from fabric import Connection, Config

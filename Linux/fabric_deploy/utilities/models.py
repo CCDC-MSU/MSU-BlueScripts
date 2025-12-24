@@ -67,6 +67,15 @@ class NetworkInfo:
 
 
 @dataclass
+class SudoersInfo:
+    """Summary of sudoers entries and sudo access"""
+    nopasswd_lines: List[str] = field(default_factory=list)
+    sudoer_users: List[str] = field(default_factory=list)
+    sudoer_groups: List[str] = field(default_factory=list)
+    sudoer_group_all: List[str] = field(default_factory=list)
+
+
+@dataclass
 class ServerInfo:
     """Complete server information from discovery"""
     hostname: str
@@ -80,6 +89,10 @@ class ServerInfo:
     # User Information  
     users: List[UserInfo] = field(default_factory=list)
     groups: List[str] = field(default_factory=list)
+
+    # Sudoers
+    sudoers_dump: str = ''
+    sudoers_info: SudoersInfo = field(default_factory=SudoersInfo)
 
     # Services
     services: List[str] = field(default_factory=list)
@@ -101,6 +114,7 @@ class ServerInfo:
 
     # Shell Information
     default_shell: str = '/bin/sh'
+    sudo_group: str = 'sudo'    # the group with sudo access
 
     # Discovery Status
     discovery_successful: bool = False
@@ -188,6 +202,7 @@ class ServerInfo:
         system_names = sorted([u.username for u in self.users if not u.is_regular_user])
         pw_change_names = sorted([u.username for u in self.users_requiring_password_change])
         group_names = sorted(self.groups or [])
+        sudoers_info = getattr(self, "sudoers_info", None)
 
         # Services/security tools
         services = sorted(self.services)
@@ -230,6 +245,16 @@ class ServerInfo:
                 format_kv("Groups", f"{len(group_names)} ({truncate_list(group_names)})"),
             ])
         )
+
+        if sudoers_info:
+            sections.append(
+                format_block("Sudoers", [
+                    format_kv("NOPASSWD lines", str(len(sudoers_info.nopasswd_lines))),
+                    format_kv("Sudo users", truncate_list(sorted(sudoers_info.sudoer_users))),
+                    format_kv("Sudo groups", truncate_list(sorted(sudoers_info.sudoer_groups))),
+                    format_kv("Groups ALL", truncate_list(sorted(sudoers_info.sudoer_group_all))),
+                ])
+            )
 
         sections.append(
             format_block("User mgmt cmds", [

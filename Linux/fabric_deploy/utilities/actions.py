@@ -1,15 +1,31 @@
-from typing import List
+from typing import List, Optional
+from .models import SudoersInfo
 
 # This class exports 4 commands to manage users, all based on installed commands
 # add_user(self, username: str, password: str) -> str:
 # add_sudo_user(self, username: str, password: str) -> str:
 # remove_user(self, username: str) -> str:
 # def remove_user_from_sudoers(self, username: str) -> str:
-
+# def lock_user(self, username: str) -> str:
 class UserManager:
-    def __init__(self, available_commands :list[str]):
-        self.available_commands = available_commands
+    def __init__(self, available_commands: list[str], groups: list[str], sudoers_info: SudoersInfo):
+        self.available_commands = list(available_commands or [])
+        self.available_groups = list(groups or [])
+
+        self.sudoers_groups :list[str] = sudoers_info.sudoer_group_all  # this is a list of groups mentioned in sudoers config and can run all commands
         
+        # If sudoers parsing finds no "full sudo" groups, fall back to a known group name
+        # and expose a bootstrap command to create/configure it.
+        self.fallback_sudoers_group: Optional[str] = None
+        self.sudoers_bootstrap_cmd: str = ""
+
+        if not self.sudoers_groups:
+            self.fallback_sudoers_group = "blue-sudoers"
+            self.sudoers_groups = [self.fallback_sudoers_group]
+
+            # Caller can run this once (as root) to create the group + grant sudo via sudoers.d
+            self.sudoers_bootstrap_cmd = self._bootstrap_sudoers_group_cmd(self.fallback_sudoers_group)
+
     def _has(self, cmd: str) -> bool:
         return cmd in set(self.available_commands or [])
 
@@ -17,6 +33,85 @@ class UserManager:
     def _sh_quote(s: str) -> str:
         # POSIX-sh safe single-quote escaping
         return "'" + s.replace("'", "'\"'\"'") + "'"
+
+    def _bootstrap_sudoers_group_cmd(self, group: str) -> str:
+        """
+        Return a sh-compatible command that:
+          1) ensures GROUP exists
+          2) grants GROUP full sudo via sudoers.d (preferred)
+        """
+        g = self._sh_quote(group)
+
+        # macOS: add_sudo_user should use built-in 'admin'; no need to bootstrap a custom group.
+        if self._has("dscl") or self._has("dseditgroup"):
+            return f"""set -eu
+g={g}
+# macOS: no-op (use 'admin' group in add_sudo_user)
+:
+"""
+
+        # BSD: pw for group, common sudoers.d paths
+        if self._has("pw"):
+            return f"""set -eu
+g={g}
+
+# Ensure group exists
+if command -v getent >/dev/null 2>&1; then
+  getent group "$g" >/dev/null 2>&1 || pw groupadd -n "$g" || true
+else
+  grep -q "^$g:" /etc/group 2>/dev/null || pw groupadd -n "$g" || true
+fi
+
+# Configure sudoers.d for the group (try common paths)
+for d in /etc/sudoers.d /usr/local/etc/sudoers.d; do
+  if [ -d "$d" ]; then
+    f="$d/$g"
+    printf '%%%s ALL=(ALL) ALL\\n' "$g" > "$f"
+    chmod 0440 "$f"
+    if command -v visudo >/dev/null 2>&1; then
+      visudo -cf "$f" >/dev/null
+    fi
+    exit 0
+  fi
+done
+
+echo "Could not find a sudoers.d directory to configure group $g" >&2
+exit 1
+"""
+
+        # Linux/BusyBox: groupadd/addgroup + /etc/sudoers.d
+        ensure_group = r'''if command -v getent >/dev/null 2>&1; then
+  getent group "$g" >/dev/null 2>&1 && exit 0
+else
+  grep -q "^$g:" /etc/group 2>/dev/null && exit 0
+fi
+
+if command -v groupadd >/dev/null 2>&1; then
+  groupadd "$g" 2>/dev/null || true
+elif command -v addgroup >/dev/null 2>&1; then
+  addgroup "$g" 2>/dev/null || true
+else
+  echo "No supported group creation tool (groupadd/addgroup) found" >&2
+  exit 1
+fi
+'''
+        return f"""set -eu
+g={g}
+
+{ensure_group}
+
+if [ -d /etc/sudoers.d ]; then
+  f="/etc/sudoers.d/$g"
+  printf '%%%s ALL=(ALL) ALL\\n' "$g" > "$f"
+  chmod 0440 "$f"
+  if command -v visudo >/dev/null 2>&1; then
+    visudo -cf "$f" >/dev/null
+  fi
+else
+  echo "/etc/sudoers.d not found; cannot configure sudoers for group $g" >&2
+  exit 1
+fi
+"""
 
     def add_user(self, username: str, password: str) -> str:
         """Return a sh-compatible command that adds a new regular user and sets its password."""
@@ -98,8 +193,15 @@ p={p}
 
     def add_sudo_user(self, username: str, password: str) -> str:
         """Return a sh-compatible command that adds a user, sets password, and grants sudo/admin."""
-        u = self._sh_quote(username)
-        p = self._sh_quote(password)
+        u = self._sh_quote(username)  # uname
+        p = self._sh_quote(password)  # passwd
+        # select correct group
+        if "sudo" in self.sudoers_groups:
+            grp = "sudo"
+        elif "wheel" in self.sudoers_groups:
+            grp = "wheel"
+        else:
+            grp = self.sudoers_groups[0]
 
         # macOS: add to admin group
         if self._has("dscl") and self._has("dseditgroup"):
@@ -119,19 +221,10 @@ dseditgroup -o edit -a "$u" -t user admin
             return f"""set -eu
 u={u}
 p={p}
+grp={grp}
 
 # ensure user exists + password set
 {self.add_user(username, password)}
-
-# Determine sudo-equivalent group (prefer wheel, else sudo if present)
-grp=""
-if command -v getent >/dev/null 2>&1; then
-  if getent group wheel >/dev/null 2>&1; then grp="wheel"; fi
-  if [ -z "$grp" ] && getent group sudo >/dev/null 2>&1; then grp="sudo"; fi
-else
-  if grep -q '^wheel:' /etc/group 2>/dev/null; then grp="wheel"; fi
-  if [ -z "$grp" ] && grep -q '^sudo:' /etc/group 2>/dev/null; then grp="sudo"; fi
-fi
 
 if [ -n "$grp" ]; then
   pw groupmod "$grp" -m "$u" || true
@@ -165,19 +258,10 @@ fi
         return f"""set -eu
 u={u}
 p={p}
+grp={grp}
 
 # ensure user exists + password set
 {self.add_user(username, password)}
-
-# Determine sudo-equivalent group (prefer sudo, else wheel)
-grp=""
-if command -v getent >/dev/null 2>&1; then
-  if getent group sudo >/dev/null 2>&1; then grp="sudo"; fi
-  if [ -z "$grp" ] && getent group wheel >/dev/null 2>&1; then grp="wheel"; fi
-else
-  if grep -q '^sudo:' /etc/group 2>/dev/null; then grp="sudo"; fi
-  if [ -z "$grp" ] && grep -q '^wheel:' /etc/group 2>/dev/null; then grp="wheel"; fi
-fi
 
 if [ -n "$grp" ]; then
   {group_add} || true
@@ -255,6 +339,7 @@ exit 1
 
     def remove_user_from_sudoers(self, username: str) -> str:
         """Return a sh-compatible command that removes sudo/admin access for a user."""
+        # todo: fix to remove the user from all sudoers_groups
         u = self._sh_quote(username)
 
         # macOS: remove from admin group
@@ -342,4 +427,51 @@ pw groupshow "$g" 2>/dev/null | awk -F: '{{print $4}}' | tr ',' '\\n' | sed '/^$
 g={g}
 grep -E "^$g:" /etc/group 2>/dev/null | awk -F: '{{print $4}}' | tr ',' '\\n' | sed '/^$/d'
 """
+
+    def lock_user(self, username: str) -> str:
+        """Return a sh-compatible command that locks a user account (best-effort, cross-platform)."""
+        u = self._sh_quote(username)
+
+        # macOS: disable password login by setting an invalid password hash marker
+        # (macOS doesn't have a single universal "lock" primitive; this is best-effort.)
+        if self._has("dscl"):
+            return f"""set -eu
+    u={u}
+
+    # If user doesn't exist, succeed (idempotent)
+    dscl . -read "/Users/$u" >/dev/null 2>&1 || exit 0
+
+    # Set password to a value that prevents interactive login
+    # '*' is commonly used as a disabled marker in some setups; if this fails, we still exit 0.
+    dscl . -passwd "/Users/$u" '*' >/dev/null 2>&1 || true
+    """
+
+        # BSD: pw lock
+        if self._has("pw"):
+            return f"""set -eu
+    u={u}
+    id "$u" >/dev/null 2>&1 || exit 0
+    pw lock "$u" >/dev/null 2>&1 || true
+    """
+
+        # Linux: prefer usermod/passwd if present
+        if self._has("usermod"):
+            return f"""set -eu
+    u={u}
+    id -u "$u" >/dev/null 2>&1 || exit 0
+    usermod -L "$u" >/dev/null 2>&1 || true
+    """
+        if self._has("passwd"):
+            return f"""set -eu
+    u={u}
+    id -u "$u" >/dev/null 2>&1 || exit 0
+    passwd -l "$u" >/dev/null 2>&1 || true
+    """
+
+        # Last resort: no supported lock mechanism discovered
+        return f"""set -eu
+    u={u}
+    echo "No supported account lock mechanism found for $u" >&2
+    exit 1
+    """
 

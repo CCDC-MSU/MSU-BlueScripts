@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import List
 import yaml
 from .models import ServerCredentials
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,18 @@ def parse_hosts_file(hosts_file: str) -> List[ServerCredentials]:
 
 def save_discovery_summary(server_info, output_file: str):
     """Save discovery results to JSON file"""
+    sudoers_info = getattr(server_info, "sudoers_info", None)
+    sudoers_dump = getattr(server_info, "sudoers_dump", "") or ""
+    sudoers_data = {
+        'dump': sudoers_dump,
+        'dump_present': bool(sudoers_dump),
+        'dump_line_count': len(sudoers_dump.splitlines()) if sudoers_dump else 0,
+        'nopasswd_lines': getattr(sudoers_info, 'nopasswd_lines', []) if sudoers_info else [],
+        'sudoer_users': getattr(sudoers_info, 'sudoer_users', []) if sudoers_info else [],
+        'sudoer_groups': getattr(sudoers_info, 'sudoer_groups', []) if sudoers_info else [],
+        'sudoer_group_all': getattr(sudoers_info, 'sudoer_group_all', []) if sudoers_info else [],
+    }
+
     summary_data = {
         'hostname': server_info.hostname,
         'discovery_time': server_info.discovery_time.isoformat(),
@@ -110,6 +123,7 @@ def save_discovery_summary(server_info, output_file: str):
             'usernames': server_info.usernames
         },
         'groups': server_info.groups,
+        'sudoers': sudoers_data,
         'services_count': len(server_info.services),
         'package_managers': server_info.package_managers,
         'security_tools': server_info.security_tools,
@@ -129,3 +143,106 @@ def setup_logging(level: str = "INFO"):
         level=getattr(logging, level.upper()),
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
+
+def analyze_sudoers(all_users, all_groups, sudoers_dump):
+    logger.info("Analyzing sudoers entries")
+    nopasswd_lines = []
+    sudoer_users = set()
+    sudoer_groups = set()
+    sudoer_group_all = set()
+
+    # Normalize users/groups for quick lookup
+    all_users = set(all_users)
+    all_groups = set(all_groups)
+
+    # Join line continuations and split into lines
+    if not sudoers_dump:
+        logger.warning("Empty sudoers dump provided")
+    sudoers_dump = sudoers_dump.replace("\\\n", "")
+    sudoers_dump = sudoers_dump.replace(', ', ',')  # normalize by replacing ', ' with just ','
+
+    lines = sudoers_dump.splitlines()
+    logger.debug(f"Sudoers dump line count: {len(lines)}")
+    for line in lines:
+        if len(line)>1:
+            logger.debug(line)
+
+    for raw_line in lines:
+        if len(raw_line) < 2:
+            continue
+        line = raw_line.strip()
+
+        # Skip empty lines and comments
+        if not line or line.startswith("#"):
+            continue
+
+        # Track NOPASSWD lines
+        if "NOPASSWD" in line:
+            nopasswd_lines.append(line)
+
+        # Split LHS and RHS
+        if "=" not in line:
+            continue
+
+        lhs, rhs = map(str.strip, line.split("=", 1))
+
+        # ----- Parse LHS (users + hosts) -----
+        # Example: "alice, bob, %dbadmins db01, db02"
+        lhs_tokens = lhs.split()
+        if not lhs_tokens or len(lhs_tokens)>2:     # if theres more than one space present before the = sign it might be a non relevant line
+            continue
+
+        users_part = lhs_tokens[0]
+
+        for entry in users_part.split(","):
+            entry = entry.strip()
+            if entry.startswith("%"):
+                group = entry[1:]
+                if group in all_groups:
+                    sudoer_groups.add(group)
+            else:
+                if entry in all_users:
+                    sudoer_users.add(entry)
+
+        # ----- Parse RunAs section -----
+        # Example: "(ALL : ALL)" or "(postgres, mysql)"
+        runas_match = re.search(r"\(([^)]+)\)", rhs)
+        logger.debug(f"runas users match: {runas_match}")
+
+        runas_users = set()
+
+        if runas_match:
+            runas_field = runas_match.group(1)
+            runas_user_part = runas_field.split(":")[0]
+            for ru in runas_user_part.split(","):
+                runas_users.add(ru.strip())
+        else:
+            runas_users.add('root')     # defaults to root a runas section is not present fkts
+
+        # ----- Parse command section -----
+        command_part = rhs.split(")", 1)[-1].strip()
+
+        is_all_commands = command_part == "ALL"
+
+        # ----- Detect groups with ALL as root -----
+        if ("ALL" in runas_users or "root" in runas_users) and is_all_commands:
+            for entry in users_part.split(","):
+                entry = entry.strip()
+                if entry.startswith("%"):
+                    group = entry[1:]
+                    if group in all_groups:
+                        sudoer_group_all.add(group)
+
+    logger.info(
+        "Sudoers analysis complete: users=%d groups=%d nopasswd_lines=%d group_all=%d",
+        len(sudoer_users),
+        len(sudoer_groups),
+        len(nopasswd_lines),
+        len(sudoer_group_all),
+    )
+    return {
+        "nopasswd_lines": nopasswd_lines,
+        "sudoer_users": sorted(sudoer_users),
+        "sudoer_groups": sorted(sudoer_groups),
+        "sudoer_group_all": sorted(sudoer_group_all),
+    }
