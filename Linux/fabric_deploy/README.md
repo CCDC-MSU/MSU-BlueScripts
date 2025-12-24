@@ -116,6 +116,8 @@ This framework includes a powerful testing system for developing and validating 
     ```bash
     fab test-module --module=user_hardening
     ```
+    Runs against all hosts in `hosts.txt` in parallel. Per-host logs are written to
+    `logs/test-module/<host>/<timestamp>.log`.
 
 *   **Test a Module in Live Mode**:
     Use the `--live` flag to apply the changes.
