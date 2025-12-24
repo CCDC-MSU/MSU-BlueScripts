@@ -1,6 +1,6 @@
 # User Hardening Module
 
-**Go back to [main README](../README.md)**
+**Go back to [main README](README.md)**
 
 This is one of the most important modules in the CCDC framework, providing comprehensive user account security management.
 
@@ -10,16 +10,16 @@ The User Hardening Module (`user_hardening.py`) is a core component of the CCDC 
 
 ### Key Features
 
--   **Authorized User Management**: Creates and manages regular and super users based on a central configuration file.
--   **Comprehensive Sudo Control**: Grants and revokes `sudo` access with a high degree of reliability.
+-   **Authorized User Management**: Uses a central configuration file to define regular, super, and protected accounts; it does not create missing users.
+-   **Comprehensive Sudo Control**: Grants and revokes `sudo` access with a high degree of reliability across Linux and BSD.
 -   **Password Management**: Sets secure, predefined passwords for all authorized users.
--   **Unauthorized User Security**: Automatically locks and disables any user accounts not defined in the configuration.
--   **Protected Account Safety**: Preserves critical system, competition, and service accounts.
+-   **Unauthorized User Security**: Disables login shells for any accounts not defined in the configuration without deleting them.
+-   **Protected Account Safety**: Preserves only the accounts listed in `dontchange_accounts`.
 -   **Cross-Platform Support**: Works on both Linux and BSD/Unix systems.
 
 ## Configuration: `users.json`
 
-The module is controlled by the `users.json` file, which defines three categories of users:
+The module reads `fabric_deploy/users.json` and uses it to define three categories of users:
 
 ```json
 {
@@ -45,14 +45,16 @@ The module is controlled by the `users.json` file, which defines three categorie
 
 ## Module Workflow
 
-The module follows a 15-step security process to ensure that user accounts are configured securely and reliably:
+1.  **Backup User Files**: Creates timestamped backups of `/etc/passwd` and `/etc/shadow` (or `/etc/master.passwd` on BSD).
+2.  **Manage Sudo Access**: Removes `sudo` privileges from all `regular_users` and grants them to all `super_users`.
+3.  **Set Passwords**: Sets the passwords for all users in `regular_users` and `super_users` to the values specified in `users.json`.
+4.  **Secure Unauthorized Users**: Any account not listed in `users.json` has its login shell set to `/bin/false` or `/usr/sbin/nologin` (no deletion).
+5.  **Generate Security Report**: Creates `/root/user_security_report.txt` with the final state.
 
-1.  **Backup User Files**: Creates timestamped backups of `/etc/passwd`, `/etc/shadow`, and other critical user files.
-2.  **Create Users**: Adds any users from `regular_users` and `super_users` that do not already exist.
-3.  **Manage Sudo Access**: Removes `sudo` privileges from all regular users and grants them to all super users.
-4.  **Set Passwords**: Sets the passwords for all users in `regular_users` and `super_users` to the values specified in `users.json`.
-5.  **Secure Unauthorized Users**: Any user account on the system that is not listed in `users.json` will be automatically locked and have its shell disabled.
-6.  **Generate Security Report**: Creates a detailed report of all actions taken, saved to `/root/user_security_report.txt` on the target machine.
+## Discovery Context
+
+-   Uses the discovered default shell and OS family to select platform-appropriate commands.
+-   Discovery summaries include a `sudoers` block (dump + parsed lists) for auditing current sudo access before running this module.
 
 ## Usage
 
@@ -72,5 +74,7 @@ It is highly recommended to always test this module in dry-run mode before apply
 ## Important Considerations
 
 *   **Review `users.json` Before Deployment**: Ensure that all authorized users, including any service or competition accounts, are correctly listed in the `dontchange_accounts` section.
+*   **Missing Users**: This module does not create accounts; missing users in `regular_users` or `super_users` can cause command failures.
+*   **System Accounts**: Any account not listed in `users.json` may have its shell disabled, including service/system accounts. Add them to `dontchange_accounts` if they must remain active.
 *   **Coordinate with Your Team**: Make sure that the user and password configuration meets the requirements of your team.
 *   **Securely Document Passwords**: The passwords in `users.json` are stored in plain text. Make sure to handle this file securely and share the passwords with your team through a secure channel.

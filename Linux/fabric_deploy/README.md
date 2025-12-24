@@ -5,6 +5,7 @@ This repository contains a Python Fabric-based automation framework designed for
 ## Features
 
 *   **Automated System Discovery**: Automatically fingerprints target systems to identify OS, users, services, and more.
+*   **Sudoers Discovery**: Captures sudoers content and summarizes sudo users, sudo groups, NOPASSWD entries, and groups with ALL privileges.
 *   **Modular Hardening**: A flexible, module-based architecture for applying specific hardening configurations.
 *   **OS-Aware Deployment**: Automatically selects the appropriate scripts and configurations based on the detected OS family.
 
@@ -62,6 +63,7 @@ All commands are run from the `Linux` directory using `fab`.
     ```bash
     fab discover --host <ip-address>
     ```
+    The discovery summary JSON includes a `sudoers` block with the sudoers dump and parsed privilege data.
 
 *   **Discover All Hosts in hosts.txt**:
     ```bash
@@ -129,10 +131,11 @@ This framework includes a powerful testing system for developing and validating 
     ```bash
     fab test-all-modules
     ```
+    Use `--host-index=<n>` to select the target host and `--live` to run changes instead of dry-run.
 
 ## User Hardening
 
-The `user_hardening` module is one of the most critical components of this framework. It provides a comprehensive solution for managing user accounts and `sudo` privileges. For more detailed information, please see the `README_user_hardening.md` file.
+The `user_hardening` module is one of the most critical components of this framework. It manages `sudo` privileges, passwords, and unauthorized account handling, but it does not create missing users. For more detailed information, please see the `README_user_hardening.md` file.
 
 ## Architecture
 
@@ -140,7 +143,9 @@ The `user_hardening` module is one of the most critical components of this frame
 *   **`utilities/`**: This directory contains the core logic of the framework.
     *   **`discovery.py`**: The system discovery engine.
     *   **`deployment.py`**: The hardening deployment engine.
+    *   **`actions.py`**: Shell-command builders for user and group management.
     *   **`models.py`**: Data models for server and user information.
+    *   **`utils.py`**: Configuration loading, host parsing, and discovery summary helpers.
     *   **`modules/`**: The directory containing all the individual hardening modules.
 
 ## Contributing

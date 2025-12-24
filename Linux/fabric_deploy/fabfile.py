@@ -236,6 +236,15 @@ def discover_all(c, hosts_file='hosts.txt'):
                         logger.info(f"Users: {server_info.regular_usernames}")
                         logger.info(f"Services: {len(server_info.services)} running")
                         logger.info(f"Security tools: {[k for k, v in server_info.security_tools.items() if v]}")
+                        sudoers_info = getattr(server_info, "sudoers_info", None)
+                        if sudoers_info:
+                            logger.info(
+                                "Sudoers: users=%d groups=%d nopasswd=%d group_all=%d",
+                                len(sudoers_info.sudoer_users),
+                                len(sudoers_info.sudoer_groups),
+                                len(sudoers_info.nopasswd_lines),
+                                len(sudoers_info.sudoer_group_all),
+                            )
                     else:
                         logger.error(f"Discovery failed for {server_creds.host}")
                         for error in server_info.discovery_errors:
