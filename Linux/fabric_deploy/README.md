@@ -5,6 +5,7 @@ This repository contains a Python Fabric-based automation framework designed for
 ## Features
 
 *   **Automated System Discovery**: Automatically fingerprints target systems to identify OS, users, services, and more.
+*   **Sudoers Discovery**: Captures sudoers content and summarizes sudo users, sudo groups, NOPASSWD entries, and groups with ALL privileges.
 *   **Modular Hardening**: A flexible, module-based architecture for applying specific hardening configurations.
 *   **OS-Aware Deployment**: Automatically selects the appropriate scripts and configurations based on the detected OS family.
 
@@ -62,30 +63,47 @@ All commands are run from the `Linux` directory using `fab`.
     ```bash
     fab discover --host <ip-address>
     ```
+    The discovery summary JSON includes a `sudoers` block with the sudoers dump and parsed privilege data.
+
+*   **Discover All Hosts in hosts.txt**:
+    ```bash
+    fab discover-all
+    ```
+    Runs in parallel. Per-host logs are written to `logs/discover-all/<host>/<timestamp>.log`.
 
 *   **Run the Full Hardening Pipeline**:
     This command will discover all hosts in `hosts.txt` and then apply the appropriate hardening modules.
     ```bash
-    fab harden-deploy
+    fab harden
     ```
+    Runs in parallel. Per-host logs are written to `logs/harden/<host>/<timestamp>.log`.
 
 *   **Dry Run**:
     To see what changes would be made without actually applying them, use the `--dry-run` flag.
     ```bash
-    fab harden-deploy --dry-run
+    fab harden --dry-run
     ```
 
 ### Advanced Usage
 
 *   **Deploy Specific Modules**:
     ```bash
-    fab harden-deploy --modules=ssh_hardening,firewall_hardening
+    fab harden --modules=ssh_hardening,firewall_hardening
     ```
 
 *   **Deploy Scripts by Category**:
     ```bash
     fab deploy-scripts --categories=users,ssh,firewall
     ```
+
+*   **Run an Arbitrary Local Script on All Targets**:
+    ```bash
+    fab run-script --file /path/to/script.sh
+    ```
+    Runs in parallel across hosts. Output for each host is written under
+    `script_outputs/<script_name>/` in this directory, and a per-host summary with return
+    codes is printed at the end. Use `--output-dir` to change the local output folder.
+    Optional flags: `--sudo=False`, `--timeout=120`, `--hosts-file=hosts.txt`, `--shell=sh`, `--dry-run`.
 
 ## Module Testing
 
@@ -100,6 +118,8 @@ This framework includes a powerful testing system for developing and validating 
     ```bash
     fab test-module --module=user_hardening
     ```
+    Runs against all hosts in `hosts.txt` in parallel. Per-host logs are written to
+    `logs/test-module/<host>/<timestamp>.log`.
 
 *   **Test a Module in Live Mode**:
     Use the `--live` flag to apply the changes.
@@ -111,10 +131,11 @@ This framework includes a powerful testing system for developing and validating 
     ```bash
     fab test-all-modules
     ```
+    Use `--host-index=<n>` to select the target host and `--live` to run changes instead of dry-run.
 
 ## User Hardening
 
-The `user_hardening` module is one of the most critical components of this framework. It provides a comprehensive solution for managing user accounts and `sudo` privileges. For more detailed information, please see the `README_user_hardening.md` file.
+The `user_hardening` module is one of the most critical components of this framework. It manages `sudo` privileges, passwords, and unauthorized account handling, but it does not create missing users. For more detailed information, please see the `README_user_hardening.md` file.
 
 ## Architecture
 
@@ -122,7 +143,9 @@ The `user_hardening` module is one of the most critical components of this frame
 *   **`utilities/`**: This directory contains the core logic of the framework.
     *   **`discovery.py`**: The system discovery engine.
     *   **`deployment.py`**: The hardening deployment engine.
+    *   **`actions.py`**: Shell-command builders for user and group management.
     *   **`models.py`**: Data models for server and user information.
+    *   **`utils.py`**: Configuration loading, host parsing, and discovery summary helpers.
     *   **`modules/`**: The directory containing all the individual hardening modules.
 
 ## Contributing

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from enum import Enum
 from invoke.exceptions import UnexpectedExit
 from .models import ServerCredentials, ServerInfo, OSInfo, UserInfo, NetworkInfo
+from .actions import UserManager
 
 logger = logging.getLogger(__name__)
 
@@ -46,15 +47,18 @@ class SystemDiscovery:
         self.credentials = credentials
         self.server_info = ServerInfo(hostname=credentials.host, credentials=credentials)
         self._os_family = OSFamily.UNKNOWN.value
+        self.user_manager = UserManager(available_commands = self.server_info.available_commands)
         
     def discover_system(self) -> ServerInfo:
         """Main discovery method - runs all discovery tasks"""
         logger.info(f"Starting system discovery for {self.credentials.host}")
         
         discovery_tasks = [
+            ("user management commands", self._discover_available_commands),
             ("basic system info", self._discover_basic_info),
             ("operating system", self._discover_os_info),
             ("users", self._discover_users),
+            ("groups", self._discover_groups),
             ("services", self._discover_services),
             ("network configuration", self._discover_network),
             ("security tools", self._discover_security_tools),
@@ -65,8 +69,8 @@ class SystemDiscovery:
         errors = []
         for task_name, task_func in discovery_tasks:
             try:
-                logger.debug(f"Discovering {task_name}...")
                 task_func()
+                logger.debug("Finished task: %-20s. %s", task_name, self._format_task_result(task_name))
             except Exception as e:
                 error_msg = f"Failed to discover {task_name}: {str(e)}"
                 logger.error(error_msg)
@@ -75,9 +79,85 @@ class SystemDiscovery:
         self.server_info.discovery_errors = errors
         self.server_info.discovery_successful = len(errors) == 0
         
+        # output detailed debug
+        logger.debug("Server info: %s", self.server_info)
+
         logger.info(f"Discovery completed for {self.credentials.host}. Success: {self.server_info.discovery_successful}")
         return self.server_info
-    
+
+    def _format_task_result(self, task_name: str) -> str:
+        """Return a short, summary of what a discovery task found (for debug logs)."""
+        try:
+            if task_name == "basic system info":
+                return (
+                    f"hostname={self.server_info.hostname!r}, "
+                    f"uptime_set={bool(self.server_info.uptime)}, "
+                    f"default_shell={self.server_info.default_shell!r}"
+                )
+
+            if task_name == "operating system":
+                os_info = getattr(self.server_info, "os", None)
+                if os_info:
+                    return (
+                        f"distro={getattr(os_info, 'distro', None)!r}, "
+                        f"version={getattr(os_info, 'version', None)!r}, "
+                        f"kernel={getattr(os_info, 'kernel', None)!r}, "
+                        f"arch={getattr(os_info, 'architecture', None)!r}, "
+                        f"family={self._os_family!r}"
+                    )
+                return f"os_info=None, family={self._os_family!r}"
+
+            if task_name == "users":
+                users = getattr(self.server_info, "users", []) or []
+                sample = [getattr(u, "username", None) for u in users[:10] if getattr(u, "username", None)]
+                return f"count={len(users)}, sample={sample}"
+
+            if task_name == "groups":
+                groups = getattr(self.server_info, "groups", []) or []
+                return f"count={len(groups)}, sample={groups[:10]}"
+
+            if task_name == "services":
+                services = getattr(self.server_info, "services", []) or []
+                return f"running_count={len(services)}, sample={services[:10]}"
+
+            if task_name == "network configuration":
+                net = getattr(self.server_info, "network", None)
+                if not net:
+                    return "network=None"
+                interfaces = getattr(net, "interfaces", None) or ""
+                listening = getattr(net, "listening_ports", None) or ""
+                iface_lines = len(interfaces.splitlines()) if interfaces else 0
+                listen_lines = len(listening.splitlines()) if listening else 0
+                return (
+                    f"interfaces_lines={iface_lines}, "
+                    f"listening_lines={listen_lines}, "
+                    f"default_route={getattr(net, 'default_route', None)!r}"
+                )
+
+            if task_name == "security tools":
+                tools = getattr(self.server_info, "security_tools", {}) or {}
+                enabled = sorted([k for k, v in tools.items() if v])
+                return f"installed={enabled}"
+
+            if task_name == "user management commands":
+                cmds = getattr(self.server_info, "available_commands", []) or []
+                return f"available_count={len(cmds)}, sample={cmds[:10]}"
+
+            if task_name == "system resources":
+                return (
+                    f"cpu_cores={getattr(self.server_info, 'cpu_cores', None)!r}, "
+                    f"memory_info_set={bool(getattr(self.server_info, 'memory_info', None))}, "
+                    f"disk_info_set={bool(getattr(self.server_info, 'disk_info', None))}"
+                )
+
+            if task_name == "package managers":
+                pms = getattr(self.server_info, "package_managers", []) or []
+                return f"available={pms}"
+
+            return "ok"
+        except Exception as e:
+            return f"summary_error={e!r}"
+
     def _run_command(self, command: str, warn: bool = True, timeout: int = 30) -> CommandResult:
         """
         Run a command and return the result
@@ -168,7 +248,6 @@ class SystemDiscovery:
                 shell_path = processor(result.output)
                 if shell_path and ('bash' in shell_path or 'sh' in shell_path):
                     self.server_info.default_shell = shell_path
-                    logger.debug(f"Detected default shell: {shell_path}")
                     break
     
     def _discover_os_info(self):
@@ -313,7 +392,55 @@ class SystemDiscovery:
                                     break
         
         self.server_info.users = users
-    
+
+    def _discover_groups(self):
+        """Discover all system groups (not just current user's groups)."""
+        available = set(getattr(self.server_info, "available_commands", []) or [])
+        group_names: List[str] = []
+
+        def parse_group_lines(output: str) -> List[str]:
+            names: List[str] = []
+            for line in output.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                if ':' in line:
+                    # /etc/group or getent group format: name:x:gid:members
+                    names.append(line.split(':', 1)[0])
+                else:
+                    # space-separated names (rare, but keep)
+                    names.extend([part for part in line.split() if part])
+            return names
+
+        # 1) Best: NSS-aware enumeration (Linux, many Unixes)
+        if 'getent' in available:
+            result = self._run_command('getent group')
+            if result.success and result.output:
+                group_names = parse_group_lines(result.output)
+
+        # 2) macOS: dscl lists groups from Directory Services
+        # (local + directory depending on configuration)
+        if not group_names and 'dscl' in available:
+            # dscl . -list /Groups returns group names, one per line
+            result = self._run_command("dscl . -list /Groups 2>/dev/null")
+            if result.success and result.output:
+                group_names = [ln.strip() for ln in result.output.splitlines() if ln.strip()]
+
+        # 3) BSD-ish: /etc/group is authoritative for local groups
+        # (many BSDs do have getent, but if not, fall back)
+        if not group_names:
+            result = self._run_command('cat /etc/group 2>/dev/null')
+            if result.success and result.output:
+                group_names = parse_group_lines(result.output)
+
+        # 4) Optional last resort: try "grep" if cat is restricted (rare)
+        # (Skip unless you have environments that block cat but allow grep)
+
+        if group_names:
+            self.server_info.groups = sorted(set(group_names))
+        else:
+            self.server_info.groups = []
+
     def _discover_services(self):
         """Discover running services"""
         services = []
@@ -372,20 +499,43 @@ class SystemDiscovery:
     
     def _discover_security_tools(self):
         """Discover installed security tools"""
-        security_tools = {}
+        critical_tools = {}
         
         # Common security tools to check
         tools_to_check = [
-            'ufw', 'iptables', 'firewalld', 'fail2ban', 'chkrootkit', 'rkhunter',
-            'clamav', 'aide', 'tripwire', 'lynis', 'nmap', 'wireshark'
+            'iptables', 'auditctl', 'rsyslogd'
         ]
         
         for tool in tools_to_check:
             # Check if tool is installed
             result = self._run_command(f'which {tool} 2>/dev/null || command -v {tool} 2>/dev/null')
-            security_tools[tool] = result.success and len(result.output) > 0
+            critical_tools[tool] = result.success and len(result.output) > 0
         
-        self.server_info.security_tools = security_tools
+        self.server_info.security_tools = critical_tools
+
+    def _discover_available_commands(self):
+        """Discover available user/group management commands"""
+        commands_to_check = [
+            'getent', 'id', 'groups',
+            'useradd', 'usermod', 'userdel',
+            'chpasswd', 'passwd',
+            'groupadd', 'groupmod', 'groupdel', 'gpasswd',
+            'pwck', 'grpck', 'vipw', 'vigr',
+            'adduser', 'deluser', 'addgroup', 'delgroup',
+            'pw','dscl','dseditgroup', 'busybox'
+        ]
+        available = []
+        seen = set()
+
+        for cmd in commands_to_check:
+            if cmd in seen:
+                continue
+            seen.add(cmd)
+            result = self._run_command(f"command -v {cmd} >/dev/null 2>&1")
+            if result.success:
+                available.append(cmd)
+
+        self.server_info.available_commands = available
     
     def _discover_system_resources(self):
         """Discover system resource information"""
@@ -414,17 +564,18 @@ class SystemDiscovery:
         
         # Common package managers
         pm_commands = {
-            'apt': 'apt-get --version',
-            'yum': 'yum --version',
-            'dnf': 'dnf --version',
-            'zypper': 'zypper --version', 
-            'pacman': 'pacman --version',
-            'emerge': 'emerge --version',
-            'apk': 'apk --version',
-            'pkg': 'pkg --version',
-            'brew': 'brew --version',
-            'snap': 'snap --version',
-            'flatpak': 'flatpak --version'
+            'apt':      'apt-get --version',
+            'dnf':      'dnf --version',
+            'yum':      'yum --version',
+            'zypper':   'zypper --version', 
+            'pacman':   'pacman --version',
+            'emerge':   'emerge --version',
+            'apk':      'apk --version',
+            'pkg':      'pkg --version',
+            'brew':     'brew --version',
+            'snap':     'snap --version',
+            'flatpak':  'flatpak --version',
+            'slackpkg': 'slackpkg version'
         }
         
         for pm_name, pm_command in pm_commands.items():

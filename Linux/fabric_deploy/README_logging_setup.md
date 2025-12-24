@@ -1,6 +1,6 @@
 # Logging Setup Module
 
-**Go back to [main README](../README.md)**
+**Go back to [main README](README.md)**
 
 This module provides a comprehensive logging setup for both Linux and BSD systems, designed to capture a wide range of security-relevant events.
 
@@ -16,6 +16,7 @@ The `logging_setup` module configures the native logging services on the target 
 -   **Log Rotation**: Sets up automatic log rotation to prevent log files from consuming excessive disk space.
 -   **Persistent Logging**: On Linux systems with `systemd`, it ensures that logs are preserved across reboots.
 -   **Detailed Auditing**: On Linux, it configures `auditd` to monitor a wide range of system events, including file access, privilege escalation, and network activity.
+-   **Command Trace File**: Writes all planned logging commands to `/tmp/ccdc_logging_commands_<host>_<timestamp>.txt` during execution.
 
 ## Linux Logging Configuration
 
@@ -55,6 +56,8 @@ Linux
    * `/var/log/secure`: Privileged authentication and security-related messages.
    * `/var/log/maillog`: Logs from the mail server.
    * `/var/log/cron`: Logs related to scheduled tasks (cron jobs).
+   * `/var/log/spooler`: Logs from mail and news spooling.
+   * `/var/log/boot.log`: Boot-time logs on some distributions.
    * `/var/log/auth.log`: Detailed authentication and authorization events.
    * `/var/log/kern.log`: Messages from the Linux kernel.
    * `/var/log/daemon.log`: Logs from background services (daemons).
@@ -76,13 +79,21 @@ Linux
    * `/var/log/auth.log`: Authentication and authorization logs.
    * `/var/log/authpriv`: Privileged authentication logs.
    * `/var/log/maillog`: Mail server logs.
+   * `/var/log/lpd-errs`: Printer subsystem logs.
+   * `/var/log/xferlog`: FTP transfer logs.
    * `/var/log/cron`: Logs from cron jobs.
    * `/var/log/daemon.log`: Logs from background services.
    * `/var/log/kern.log`: Kernel messages.
+   * `/var/log/debug.log`: Debug-level syslog output.
    * `/var/log/ssh.log`: Logs from the SSH daemon.
    * `/etc/newsyslog.conf`: Configuration for newsyslog (the BSD log rotator), modified to include the new security logs.
    * `/var/account/acct`: Process accounting logs.
    * `/etc/csh.cshrc`: System-wide configuration for the csh shell, modified to increase command history size.
+
+## Discovery Context
+
+-   Uses the discovered OS family and OS metadata to choose Linux vs BSD logging paths.
+-   Discovery summaries include a `sudoers` block (dump + parsed lists) for privilege auditing alongside logging changes.
 
 ## Usage
 

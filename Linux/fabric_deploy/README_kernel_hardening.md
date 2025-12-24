@@ -1,6 +1,6 @@
 # Kernel Hardening Module
 
-**Go back to [main README](../README.md)**
+**Go back to [main README](README.md)**
 
 This module hardens the kernel of the target system by setting various `sysctl` parameters. It applies a set of security best practices to both Linux and BSD systems.
 
@@ -17,7 +17,7 @@ The `kernel_hardening` module modifies kernel parameters to improve the security
 
 ## Linux Hardening Parameters
 
-For Linux systems, the module creates configuration files in `/etc/sysctl.d/` to set the following parameters:
+For Linux systems, the module creates one file per setting in `/etc/sysctl.d/` (prefixed with `99-hardening-`) and applies them with `sysctl --system`:
 
 ### Network Security
 
@@ -59,6 +59,11 @@ For BSD systems, the module uses the `sysctl` command to set the following param
 *   `security.bsd.hardlink_check_gid=1`: Protect hardlinks by group.
 *   `security.bsd.symlinkown_gid=1`: Protect symlinks.
 *   `kern.sugid_coredump=0`: Disable SUID core dumps.
+
+## Discovery Context
+
+-   Uses the discovered OS family to select Linux vs BSD sysctl behavior.
+-   Discovery summaries include a `sudoers` block (dump + parsed lists) for privilege auditing alongside kernel changes.
 
 ## Usage
 

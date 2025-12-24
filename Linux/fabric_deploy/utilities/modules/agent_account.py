@@ -4,9 +4,11 @@ Creates and manages the scan-agent account for security operations
 Supports Linux, BSD, and Unix systems
 """
 # TODO: make a restricted user, create a new user called restricteddawg assign rbash as their shell
+# TODO: add a way to check that we have passwordless sudo
 
 from typing import List
-from .base import HardeningModule, HardeningCommand
+from fabric import Connection, Config
+from .base import HardeningModule, HardeningCommand, PythonAction, HardeningResult
 from ..discovery import OSFamily
 
 # Global variable for the scan-agent password
@@ -26,19 +28,28 @@ class AgentAccountModule(HardeningModule):
             os_family = OSFamily.UNKNOWN
         
         if os_family in [OSFamily.FREEBSD, OSFamily.OPENBSD, OSFamily.NETBSD, OSFamily.BSDGENERIC]:
-            return self._get_bsd_commands()
+            commands = self._get_bsd_commands()
         elif os_family == OSFamily.DARWIN:
-            return self._get_macos_commands()
+            commands = self._get_macos_commands()
         else:
-            return self._get_linux_commands()
+            commands = self._get_linux_commands()
+
+        commands.append(PythonAction(
+            function=self._test_scan_agent_ssh,
+            description="Test SSH login for scan-agent",
+            requires_sudo=False
+        ))
+
+        return commands
     
     def _get_linux_commands(self) -> List[HardeningCommand]:
         """Commands for Linux systems"""
         commands = []
+        shell = self.server_info.default_shell or "/bin/sh"
         
         # Create the scan-agent user
         commands.append(HardeningCommand(
-            command="useradd -m -s /bin/bash scan-agent",
+            command=f"useradd -m -s {shell} scan-agent",
             description="Create scan-agent user account",
             check_command="id scan-agent >/dev/null 2>&1 && echo exists",
             requires_sudo=True
@@ -83,7 +94,7 @@ class AgentAccountModule(HardeningModule):
         
         # Create home directory structure
         commands.append(HardeningCommand(
-            command="mkdir -p /home/scan-agent/.ssh && chown scan-agent:scan-agent /home/scan-agent/.ssh && chmod 700 /home/scan-agent/.ssh",
+            command="mkdir -p /home/swhat are groups associated with sudoers in linuxcan-agent/.ssh && chown scan-agent:scan-agent /home/scan-agent/.ssh && chmod 700 /home/scan-agent/.ssh",
             description="Create SSH directory for scan-agent",
             check_command="test -d /home/scan-agent/.ssh && echo exists",
             requires_sudo=True
@@ -97,6 +108,7 @@ class AgentAccountModule(HardeningModule):
         ))
         
         # Add scan-agent to useful groups for security operations (best effort)
+        # to-fix: this fails for systems without bash
         commands.append(HardeningCommand(
             command='bash -c "for group in adm systemd-journal; do getent group \\$group >/dev/null && usermod -aG \\$group scan-agent; done || true"',
             description="Add scan-agent to system monitoring groups",
@@ -108,10 +120,11 @@ class AgentAccountModule(HardeningModule):
     def _get_bsd_commands(self) -> List[HardeningCommand]:
         """Commands for BSD systems (FreeBSD, OpenBSD, NetBSD)"""
         commands = []
+        shell = self.server_info.default_shell or "/bin/sh"
         
         # Create the scan-agent user (BSD style)
         commands.append(HardeningCommand(
-            command="pw useradd scan-agent -m -s /bin/sh -c 'CCDC Scan Agent' 2>/dev/null || adduser -batch scan-agent '' '' '' 'CCDC Scan Agent' '' '' || useradd -m -s /bin/sh scan-agent",
+            command=f"pw useradd scan-agent -m -s {shell} -c 'CCDC Scan Agent' 2>/dev/null || adduser -batch scan-agent '' '' '' 'CCDC Scan Agent' '' '' || useradd -m -s {shell} scan-agent",
             description="Create scan-agent user account (BSD)",
             check_command="id scan-agent >/dev/null 2>&1 && echo exists",
             requires_sudo=True
@@ -173,10 +186,11 @@ class AgentAccountModule(HardeningModule):
     def _get_macos_commands(self) -> List[HardeningCommand]:
         """Commands for macOS systems"""
         commands = []
+        shell = self.server_info.default_shell or "/bin/sh"
         
         # Create the scan-agent user (macOS style)
         commands.append(HardeningCommand(
-            command="dscl . -create /Users/scan-agent && dscl . -create /Users/scan-agent UserShell /bin/bash && dscl . -create /Users/scan-agent RealName 'CCDC Scan Agent' && dscl . -create /Users/scan-agent UniqueID 1001 && dscl . -create /Users/scan-agent PrimaryGroupID 20 && dscl . -create /Users/scan-agent NFSHomeDirectory /Users/scan-agent",
+            command=f"dscl . -create /Users/scan-agent && dscl . -create /Users/scan-agent UserShell {shell} && dscl . -create /Users/scan-agent RealName 'CCDC Scan Agent' && dscl . -create /Users/scan-agent UniqueID 1001 && dscl . -create /Users/scan-agent PrimaryGroupID 20 && dscl . -create /Users/scan-agent NFSHomeDirectory /Users/scan-agent",
             description="Create scan-agent user account (macOS)",
             check_command="dscl . -read /Users/scan-agent >/dev/null 2>&1 && echo exists",
             requires_sudo=True
@@ -221,6 +235,64 @@ class AgentAccountModule(HardeningModule):
         ))
         
         return commands
+
+    def _test_scan_agent_ssh(self, conn: Connection, server_info):
+        """Verify SSH login as scan-agent and confirm sudo privileges"""
+        host = server_info.credentials.host
+        port = getattr(server_info.credentials, 'port', 22)
+
+        connect_kwargs = {
+            'allow_agent': False,
+            'look_for_keys': False,
+            'password': SCAN_AGENT_PASSWORD
+        }
+        config_overrides = {
+            'load_ssh_configs': False
+        }
+
+        if port != 22:
+            connect_kwargs['port'] = port
+
+        config = Config(overrides=config_overrides)
+
+        try:
+            with Connection(host, user='scan-agent', config=config, connect_kwargs=connect_kwargs) as test_conn:
+                login_result = test_conn.run('id -u', hide=True, warn=True, timeout=10)
+                if not login_result.ok:
+                    return HardeningResult(
+                        success=False,
+                        command="python_function:_test_scan_agent_ssh",
+                        description="Test SSH login for scan-agent",
+                        output=login_result.output,
+                        error=login_result.stderr or "SSH login test command failed"
+                    )
+
+                sudo_cmd = f"printf '%s\\n' '{SCAN_AGENT_PASSWORD}' | sudo -S -p '' -k id -u"
+                sudo_result = test_conn.run(sudo_cmd, hide=True, warn=True, timeout=10)
+                if sudo_result.ok and sudo_result.stdout.strip() == "0":
+                    return HardeningResult(
+                        success=True,
+                        command="python_function:_test_scan_agent_ssh",
+                        description="Test SSH login for scan-agent",
+                        output="SSH login and sudo privileges verified for scan-agent"
+                    )
+
+                error_msg = sudo_result.stderr or "sudo test failed or user lacks sudo privileges"
+                return HardeningResult(
+                    success=False,
+                    command="python_function:_test_scan_agent_ssh",
+                    description="Test SSH login for scan-agent",
+                    output=sudo_result.stdout,
+                    error=error_msg
+                )
+        except Exception as e:
+            return HardeningResult(
+                success=False,
+                command="python_function:_test_scan_agent_ssh",
+                description="Test SSH login for scan-agent",
+                output="",
+                error=f"SSH connection failed for scan-agent@{host}:{port}: {e}"
+            )
     
     def is_applicable(self) -> bool:
         """This module is applicable to Linux, BSD, and macOS systems"""
