@@ -22,6 +22,7 @@ class UserInfo:
     gid: int
     home: str
     shell: str
+    valid_shell: bool
     requires_password_change: bool = False  # True if user has a password hash (not * or !)
 
     @property

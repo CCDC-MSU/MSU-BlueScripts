@@ -347,6 +347,11 @@ class SystemDiscovery:
                 elif 'bsd' in uname:
                     os_info.distro = "BSD"
                     self._os_family = OSFamily.FREEBSD.value
+
+    def _test_valid_user(self, username) -> bool:
+        """ test if the user has a valid shell by trying to su to it """
+        result = self._run_command(f'su - {username} -c "true" 2>/dev/null', warn=True, timeout=2)
+        return result.success
     
     def _discover_users(self):
         """Discover system users"""
@@ -365,7 +370,8 @@ class SystemDiscovery:
                             uid=int(parts[2]),
                             gid=int(parts[3]),
                             home=parts[5],
-                            shell=parts[6] if len(parts) > 6 else '/bin/sh'
+                            shell=parts[6] if len(parts) > 6 else '/bin/sh',
+                            valid_shell = self._test_valid_user(parts[0])
                         )
                         users.append(user)
                     except ValueError:
