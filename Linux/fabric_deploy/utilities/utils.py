@@ -5,6 +5,8 @@ Contains helper functions for configuration, file parsing, and common operations
 
 import json
 import logging
+import secrets
+import string
 from pathlib import Path
 from typing import List
 import yaml
@@ -144,6 +146,22 @@ def setup_logging(level: str = "INFO"):
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
 
+
+def generate_password() -> str:
+    """Generate a password with 6 upper, 6 lower, and 4 symbols in random order."""
+    symbols = "!@#$%^&*()-_=+[]{}:,.?"
+    chars = (
+        [secrets.choice(string.ascii_uppercase) for _ in range(6)]
+        + [secrets.choice(string.ascii_lowercase) for _ in range(6)]
+        + [secrets.choice(symbols) for _ in range(4)]
+    )
+
+    for i in range(len(chars) - 1, 0, -1):
+        j = secrets.randbelow(i + 1)
+        chars[i], chars[j] = chars[j], chars[i]
+
+    return "".join(chars)
+
 def analyze_sudoers(all_users, all_groups, sudoers_dump):
     logger.info("Analyzing sudoers entries")
     nopasswd_lines = []
@@ -207,7 +225,7 @@ def analyze_sudoers(all_users, all_groups, sudoers_dump):
         # ----- Parse RunAs section -----
         # Example: "(ALL : ALL)" or "(postgres, mysql)"
         runas_match = re.search(r"\(([^)]+)\)", rhs)
-        logger.debug(f"runas users match: {runas_match}")
+        # logger.debug(f"runas users match: {runas_match}")
 
         runas_users = set()
 

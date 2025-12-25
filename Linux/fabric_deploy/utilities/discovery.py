@@ -537,7 +537,7 @@ class SystemDiscovery:
             'groupadd', 'groupmod', 'groupdel', 'gpasswd',
             'pwck', 'grpck', 'vipw', 'vigr',
             'adduser', 'deluser', 'addgroup', 'delgroup',
-            'pw','dscl','dseditgroup', 'busybox'
+            'pw','dscl','dseditgroup', 'busybox', 'pgrep', 'pkill', 
         ]
         available = []
         seen = set()
