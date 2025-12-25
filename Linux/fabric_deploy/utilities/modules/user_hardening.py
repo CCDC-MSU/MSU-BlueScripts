@@ -1,366 +1,345 @@
 """
-User hardening module for CCDC framework
-Manages user accounts, passwords, sudo access, and account security
-Supports Linux and BSD/Unix systems
+User hardening module for CCDC framework.
+Manages user accounts, passwords, sudo access, and account security.
 """
-# TODO: terminate all running processes owned by the user being disabled.
-# TODO: get a list of orphaned files
-# TODO: removing old authorized_keys files and generating new key pairs for users.
 
 import json
+import logging
 import os
-from typing import List, Dict, Set
-from .base import HardeningModule, HardeningCommand
-from ..discovery import OSFamily
+import threading
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Set, Tuple
+
+from .base import HardeningModule, HardeningCommand, PythonAction, HardeningResult
+from ..actions import UserManager
+from ..utils import generate_password
+
+logger = logging.getLogger(__name__)
 
 
 class UserHardeningModule(HardeningModule):
-    """Comprehensive user account hardening and management"""
-    
+    """User account hardening based on users.json."""
+
+    _password_lock = threading.Lock()
+    _password_cache: Dict[str, str] = {}
+    _per_host_users: Set[str] = set()
+    _config_cache: Dict = {}
+    _passwords_loaded = False
+
     def __init__(self, connection, server_info, os_family):
         super().__init__(connection, server_info, os_family)
-        self.users_config = self._load_users_config()
-        self.system_accounts = self._get_system_accounts()
-        
+        self.user_manager = UserManager(
+            server_info.available_commands,
+            server_info.groups,
+            server_info.sudoers_info,
+        )
+        self.users_config = self._ensure_passwords_loaded()
+        self.required_regular_users = self._get_user_set("regular_users")
+        self.required_super_users = self._get_user_set("super_users")
+        self.do_not_change_users = self._get_user_set(
+            "dontchange_accounts",
+            "do_not_change_accounts",
+            "do_not_change_users",
+        )
+        overlap = self.required_regular_users & self.required_super_users
+        if overlap:
+            logger.warning(
+                "Users listed as both regular and super: %s",
+                ", ".join(sorted(overlap)),
+            )
+            self.required_regular_users -= overlap
+        self.required_users = self.required_regular_users | self.required_super_users
+        self.current_valid_users = {
+            user.username for user in server_info.users if user.valid_shell
+        }
+        self.current_sudo_users = self._discover_current_sudo_users()
+        self.run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.password_log_path = self._build_password_log_path()
+        self.password_cache = dict(UserHardeningModule._password_cache)
+        self.per_host_users = set(UserHardeningModule._per_host_users)
+
     def get_name(self) -> str:
         return "user_hardening"
-    
+
     def _load_users_config(self) -> Dict:
-        """Load users configuration from users.json"""
-        config_path = os.path.join(os.path.dirname(__file__), '../../users.json')
+        """Load users configuration from users.json."""
+        config_path = os.path.join(os.path.dirname(__file__), "../../users.json")
         try:
-            with open(config_path, 'r') as f:
+            with open(config_path, "r") as f:
                 return json.load(f)
         except FileNotFoundError:
-            # Return default config if file doesn't exist
-            return {
-                "regular_users": {},
-                "super_users": {},
-                "dontchange_accounts": {
-                    "root": "system account",
-                    "scan-agent": "do not change"
-                }
-            }
-    
-    def _get_system_accounts(self) -> Set[str]:
-        """Get list of common system accounts that should not be modified"""
-        linux_system_accounts = {
-            'root', 'daemon', 'bin', 'sys', 'sync', 'games', 'man', 'lp', 
-            'mail', 'news', 'uucp', 'proxy', 'www-data', 'backup', 'list',
-            'irc', 'gnats', 'nobody', 'systemd-network', 'systemd-resolve',
-            'messagebus', 'systemd-timesync', 'syslog', 'uuidd', 'tcpdump',
-            'tss', 'landscape', 'fwupd-refresh', '_apt', 'lxd', 'mysql',
-            'postgres', 'redis', 'mongodb', 'nginx', 'apache', 'httpd',
-            'postfix', 'dovecot', 'bind', 'named', 'ntp', 'ssh', 'sshd'
+            logger.warning("users.json not found at %s", config_path)
+        except json.JSONDecodeError as exc:
+            logger.error("users.json is invalid: %s", exc)
+
+        return {
+            "regular_users": {},
+            "super_users": {},
+            "dontchange_accounts": {
+                "root": "system account",
+                "scan-agent": "do not change",
+            },
         }
-        
-        bsd_system_accounts = {
-            'root', 'daemon', 'operator', 'bin', 'tty', 'kmem', 'games',
-            'news', 'man', 'bind', 'uucp', 'proxy', 'authpf', '_pflogd',
-            '_dhcp', '_tcpdump', '_tftpd', '_rbootd', '_ppp', '_ntp',
-            '_ftp', '_identd', '_rstatd', '_rusersd', '_fingerd', '_sshd',
-            '_x11', '_ipsec', '_isakmpd', '_afs', '_bgpd', '_unbound',
-            '_httpd', '_smtpd', '_smtpq', '_file', '_radiusd', '_eigrpd',
-            '_vmd', '_sndiop', '_syspatch', '_slaacd'
-        }
-        
-        try:
-            os_family = OSFamily(self.os_family)
-            if os_family in [OSFamily.FREEBSD, OSFamily.OPENBSD, OSFamily.NETBSD, OSFamily.BSDGENERIC]:
-                return bsd_system_accounts
-            else:
-                return linux_system_accounts
-        except ValueError:
-            # Default to Linux system accounts
-            return linux_system_accounts
-    
-    def get_commands(self) -> List[HardeningCommand]:
-        commands = []
-        
-        # Step 1: Backup current user configuration
-        shell = self.server_info.default_shell
-        commands.append(HardeningCommand(
-            command=f"{shell} -c \"cp /etc/passwd /etc/passwd.backup.$(date +%Y%m%d_%H%M%S) && cp /etc/shadow /etc/shadow.backup.$(date +%Y%m%d_%H%M%S) 2>/dev/null || cp /etc/master.passwd /etc/master.passwd.backup.$(date +%Y%m%d_%H%M%S) 2>/dev/null\"",
-            description="Backup user account files",
-            requires_sudo=True
-        ))
-        
-        # Step 2: Skip user creation - users must already exist
-        # No longer creating regular_users or super_users from config
-        
-        # Step 4: Remove sudo access from regular users (if they exist)
-        for username in self.users_config.get('regular_users', {}).keys():
-            commands.extend(self._remove_sudo_access_commands(username))
-        
-        # Step 5: Grant sudo access to super users (if they exist)
-        for username in self.users_config.get('super_users', {}).keys():
-            commands.extend(self._grant_sudo_access_commands(username))
-        
-        # Step 6: Set passwords for authorized users (if they exist)
-        all_users = {**self.users_config.get('regular_users', {}), 
-                    **self.users_config.get('super_users', {})}
-        for username, password in all_users.items():
-            commands.append(self._set_password_command(username, password))
-        
-        # Step 7: Disable shells for unauthorized users
-        commands.extend(self._secure_unauthorized_users_commands())
-        
-        # Step 8: Create user management report
-        commands.append(HardeningCommand(
-            command=self._generate_user_report_command(),
-            description="Generate user account security report",
-            requires_sudo=True
-        ))
-        
-        return commands
-        
-    def _remove_sudo_access_commands(self, username: str) -> List[HardeningCommand]:
-        """Create commands to remove sudo access from a user"""
-        commands = []
-        shell = self.server_info.default_shell
-        
-        try:
-            os_family = OSFamily(self.os_family)
-            
-            if os_family in [OSFamily.FREEBSD, OSFamily.OPENBSD, OSFamily.NETBSD, OSFamily.BSDGENERIC]:
-                # BSD sudo removal
-                commands.append(HardeningCommand(
-                    command=f"{shell} -c \"pw groupmod wheel -d {username} 2>/dev/null || gpasswd -d {username} wheel 2>/dev/null || true\"",
-                    description=f"Remove sudo access: {username} (BSD)",
-                    requires_sudo=True
-                ))
-            else:
-                # Linux sudo removal - check multiple locations
-                commands.append(HardeningCommand(
-                    command=f"""{shell} -c \"
-                    # Remove from sudo group
-                    gpasswd -d {username} sudo 2>/dev/null || deluser {username} sudo 2>/dev/null || usermod -G $(groups {username} | sed 's/{username} : //g' | sed 's/sudo //g' | tr ' ' ',') {username} 2>/dev/null || true
-                    
-                    # Remove from wheel group  
-                    gpasswd -d {username} wheel 2>/dev/null || deluser {username} wheel 2>/dev/null || true
-                    
-                    # Remove from admin group
-                    gpasswd -d {username} admin 2>/dev/null || deluser {username} admin 2>/dev/null || true
-                    
-                    # Remove individual sudoers entries
-                    sed -i '/^{username}[[:space:]]/d' /etc/sudoers 2>/dev/null || true
-                    rm -f /etc/sudoers.d/{username} 2>/dev/null || true
-                    \"""".strip(),
-                    description=f"Remove all sudo access: {username}",
-                    requires_sudo=True
-                ))
-        except ValueError:
-            # Default to Linux
-            commands.append(HardeningCommand(
-                command=f"{shell} -c \"gpasswd -d {username} sudo 2>/dev/null || gpasswd -d {username} wheel 2>/dev/null || gpasswd -d {username} admin 2>/dev/null || true\"",
-                description=f"Remove sudo access: {username}",
-                requires_sudo=True
-            ))
-            
-        return commands
-    
-    def _grant_sudo_access_commands(self, username: str) -> List[HardeningCommand]:
-        """Create commands to grant sudo access to a user"""
-        commands = []
-        shell = self.server_info.default_shell
-        
-        try:
-            os_family = OSFamily(self.os_family)
-            
-            if os_family in [OSFamily.FREEBSD, OSFamily.OPENBSD, OSFamily.NETBSD, OSFamily.BSDGENERIC]:
-                # BSD sudo access
-                commands.append(HardeningCommand(
-                    command=f"{shell} -c \"pw groupmod wheel -m {username} 2>/dev/null || usermod -G wheel {username}\"",
-                    description=f"Grant sudo access: {username} (BSD)",
-                    check_command=f"{shell} -c \"groups {username} | grep -q wheel && echo has_sudo\"",
-                    requires_sudo=True
-                ))
-            else:
-                # Linux sudo access
-                commands.append(HardeningCommand(
-                    command=f"{shell} -c \"usermod -aG sudo {username} 2>/dev/null || usermod -aG wheel {username}\"",
-                    description=f"Grant sudo access: {username}",
-                    check_command=f"{shell} -c \"groups {username} | grep -E '(sudo|wheel)' >/dev/null && echo has_sudo\"",
-                    requires_sudo=True
-                ))
-        except ValueError:
-            # Default to Linux
-            commands.append(HardeningCommand(
-                command=f"{shell} -c \"usermod -aG sudo {username} 2>/dev/null || usermod -aG wheel {username}\"",
-                description=f"Grant sudo access: {username}",
-                check_command=f"{shell} -c \"groups {username} | grep -E '(sudo|wheel)' >/dev/null && echo has_sudo\"",
-                requires_sudo=True
-            ))
-            
-        return commands
-    
-    def _set_password_command(self, username: str, password: str) -> HardeningCommand:
-        """Create command to set user password"""
-        shell = self.server_info.default_shell
-        
-        try:
-            os_family = OSFamily(self.os_family)
-            
-            if os_family in [OSFamily.FREEBSD, OSFamily.OPENBSD, OSFamily.NETBSD, OSFamily.BSDGENERIC]:
-                # BSD password setting
-                return HardeningCommand(
-                    command=f"{shell} -c \"echo '{password}' | pw usermod {username} -h 0 2>/dev/null || echo '{username}:{password}' | chpasswd\"",
-                    description=f"Set password for user: {username}",
-                    requires_sudo=True
-                )
-            else:
-                # Linux password setting
-                return HardeningCommand(
-                    command=f"{shell} -c \"usermod --password $(openssl passwd -6 '{password}') {username} || echo '{username}:{password}' | chpasswd\"",
-                    description=f"Set password for user: {username}",
-                    requires_sudo=True
-                )
-        except ValueError:
-            # Default to Linux
-            return HardeningCommand(
-                command=f"{shell} -c \"usermod --password $(openssl passwd -6 '{password}') {username} || echo '{username}:{password}' | chpasswd\"",
-                description=f"Set password for user: {username}",
-                requires_sudo=True
+
+    def _get_user_set(self, *keys: str) -> Set[str]:
+        users: Set[str] = set()
+        for key in keys:
+            value = self.users_config.get(key, {})
+            if isinstance(value, dict):
+                users.update(value.keys())
+            elif isinstance(value, list):
+                users.update(value)
+        return users
+
+    def _normalize_user_map(self, value: object) -> Tuple[Dict[str, object], bool]:
+        if isinstance(value, dict):
+            return dict(value), False
+        if isinstance(value, list):
+            return {user: None for user in value}, True
+        return {}, False
+
+    def _ensure_passwords_loaded(self) -> Dict:
+        config_path = os.path.join(os.path.dirname(__file__), "../../users.json")
+        with UserHardeningModule._password_lock:
+            if UserHardeningModule._passwords_loaded:
+                return UserHardeningModule._config_cache
+
+            config = self._load_users_config()
+            regular_map, regular_from_list = self._normalize_user_map(
+                config.get("regular_users", {})
             )
-    
-    def _secure_unauthorized_users_commands(self) -> List[HardeningCommand]:
-        """Create commands to secure unauthorized user accounts"""
-        commands = []
-        shell = self.server_info.default_shell
+            super_map, super_from_list = self._normalize_user_map(
+                config.get("super_users", {})
+            )
+
+            config["regular_users"] = regular_map
+            config["super_users"] = super_map
+
+            password_cache: Dict[str, str] = {}
+            per_host_users: Set[str] = set()
+            changed = False
+
+            def populate_passwords(
+                user_map: Dict[str, object],
+                from_list: bool,
+            ) -> None:
+                nonlocal changed
+                for username, value in user_map.items():
+                    if isinstance(value, str) and value.strip():
+                        password_cache[username] = value
+                        continue
+
+                    if value is None or (isinstance(value, str) and value.strip() == ""):
+                        if from_list:
+                            password = generate_password()
+                            user_map[username] = password
+                            password_cache[username] = password
+                            changed = True
+                        else:
+                            per_host_users.add(username)
+                        continue
+
+                    password = str(value)
+                    user_map[username] = password
+                    password_cache[username] = password
+                    changed = True
+
+            populate_passwords(regular_map, regular_from_list)
+            populate_passwords(super_map, super_from_list)
+
+            per_host_users -= set(password_cache)
+
+            if changed:
+                try:
+                    with open(config_path, "w") as f:
+                        json.dump(config, f, indent=2)
+                        f.write("\n")
+                    logger.info("Updated users.json with generated passwords")
+                except OSError as exc:
+                    logger.error("Failed to update users.json: %s", exc)
+
+            UserHardeningModule._password_cache = password_cache
+            UserHardeningModule._per_host_users = per_host_users
+            UserHardeningModule._config_cache = config
+            UserHardeningModule._passwords_loaded = True
+
+            return config
+
+    def _discover_current_sudo_users(self) -> Set[str]:
+        sudo_users = set(self.server_info.sudoers_info.sudoer_users or [])
+        sudo_groups = set(self.server_info.sudoers_info.sudoer_groups or [])
+        sudo_groups.update(self.server_info.sudoers_info.sudoer_group_all or [])
+
+        for group in sorted(sudo_groups):
+            script = self.user_manager.get_users_in_group(group)
+            result = self._run_command(script, use_sudo=False)
+            if result.success and result.output:
+                for line in result.output.splitlines():
+                    user = line.strip()
+                    if user:
+                        sudo_users.add(user)
+            elif result.error:
+                logger.debug("Failed to query group %s: %s", group, result.error)
+
+        return sudo_users
+
+    def _host_label(self) -> str:
+        label = self.server_info.credentials.host.replace(":", "_").replace("/", "_")
+        label = label.replace(" ", "_")
+        port = getattr(self.server_info.credentials, "port", 22)
+        if port != 22:
+            label = f"{label}_{port}"
+        return label
+
+    def _build_password_log_path(self) -> str:
+        host_label = self._host_label()
+        log_dir = Path("logs") / "user-hardening" / host_label
+        return str(log_dir / f"passwords_{self.run_timestamp}.txt")
+
+    def _write_password_log(
+        self,
+        conn,
+        server_info,
+        log_path: str,
+        records: List[Tuple[str, str, str]],
+    ) -> HardeningResult:
+        if not records:
+            return HardeningResult(
+                success=True,
+                command="write_password_log",
+                description="Write password log",
+                output="No password changes to record",
+            )
+
+        log_file = Path(log_path)
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+
+        lines = [
+            "User hardening password log",
+            f"Host: {server_info.credentials.host}",
+            f"Generated: {self.run_timestamp}",
+            "",
+            "username\trole\tpassword",
+        ]
+        for username, role, password in records:
+            lines.append(f"{username}\t{role}\t{password}")
+
+        log_file.write_text("\n".join(lines) + "\n")
+        os.chmod(log_file, 0o600)
+
+        logger.info("Password log written to %s", log_file)
+        return HardeningResult(
+            success=True,
+            command=f"write_password_log:{log_file}",
+            description="Write password log",
+            output=str(log_file),
+        )
+
+    def get_commands(self) -> List[HardeningCommand]:
+        commands: List[HardeningCommand] = []
+        password_records: List[Tuple[str, str, str]] = []
+
+        if not self.required_users:
+            logger.error("No users listed in users.json. The script refuses to continue.")
+            return commands
         
-        # Get all authorized users (only from config, not system accounts)
-        authorized_users = set()
-        authorized_users.update(self.users_config.get('regular_users', {}).keys())
-        authorized_users.update(self.users_config.get('super_users', {}).keys())
-        authorized_users.update(self.users_config.get('dontchange_accounts', {}).keys())
-        
-        try:
-            os_family = OSFamily(self.os_family)
-            
-            if os_family in [OSFamily.FREEBSD, OSFamily.OPENBSD, OSFamily.NETBSD, OSFamily.BSDGENERIC]:
-                # BSD unauthorized user handling
-                commands.append(HardeningCommand(
-                    command=f"""
-                    # Get all users
-                    for user in $(awk -F: '{{{{ print $1 }}}}' /etc/passwd); do
-                        # Skip authorized users
-                        case "$user" in
-                            {"|".join(authorized_users)})
-                                echo "Skipping authorized user: $user"
-                                ;;
-                            *)
-                                echo "Disabling unauthorized user: $user"
-                                # Disable shell
-                                pw usermod $user -s /usr/sbin/nologin 2>/dev/null || chsh -s /usr/sbin/nologin $user 2>/dev/null || pw usermod $user -s /bin/false 2>/dev/null || chsh -s /bin/false $user 2>/dev/null || true
-                                ;;
-                        esac
-                    done
-                    """.strip(),
-                    description="Disable unauthorized user accounts (BSD)",
-                    requires_sudo=True
-                ))
+        for username in sorted(self.required_super_users):
+            if username in self.do_not_change_users:
+                logger.info("Skipping do-not-change account: %s", username)
+                continue
+
+            if username in self.per_host_users:
+                password = generate_password()
             else:
-                # Linux unauthorized user handling
-                commands.append(HardeningCommand(
-                    command=f"""
-                    # Get all users (not just UID >= 1000)
-                    for user in $(awk -F: '{{{{ print $1 }}}}' /etc/passwd); do
-                        # Skip authorized users
-                        case "$user" in
-                            {"|".join(authorized_users)})
-                                echo "Skipping authorized user: $user"
-                                ;;
-                            *)
-                                echo "Disabling unauthorized user: $user"
-                                # Disable shell
-                                usermod -s /bin/false $user 2>/dev/null || chsh -s /bin/false $user 2>/dev/null || true
-                                ;;
-                        esac
-                    done
-                    """.strip(),
-                    description="Disable unauthorized user accounts",
-                    requires_sudo=True
-                ))
-        except ValueError:
-            # Default to Linux
-            commands.append(HardeningCommand(
-                command=f"""
-                for user in $(awk -F: '{{{{ print $1 }}}}' /etc/passwd); do
-                    case "$user" in
-                        {"|".join(authorized_users)})
-                            echo "Skipping authorized user: $user"
-                            ;;
-                        *)
-                            echo "Disabling unauthorized user: $user"
-                            usermod -s /bin/false $user 2>/dev/null || chsh -s /bin/false $user 2>/dev/null || true
-                            ;;
-                    esac
-                done
-                """.strip(),
-                description="Disable unauthorized user accounts",
-                requires_sudo=True
-            ))
-            
+                password = self.password_cache.get(username, generate_password())
+            password_records.append((username, "super", password))
+
+            scripts = self.user_manager.add_sudo_user(username, password)
+            for index, script in enumerate(scripts, start=1):
+                commands.append(
+                    HardeningCommand(
+                        command=script,
+                        description=(
+                            f"Ensure super user {username} has sudo access "
+                            f"({index}/{len(scripts)})"
+                        ),
+                        requires_sudo=True,
+                    )
+                )
+
+        for username in sorted(self.required_regular_users):
+            if username in self.do_not_change_users:
+                logger.info("Skipping do-not-change account: %s", username)
+                continue
+
+            if username in self.per_host_users:
+                password = generate_password()
+            else:
+                password = self.password_cache.get(username, generate_password())
+            password_records.append((username, "regular", password))
+
+            commands.append(
+                HardeningCommand(
+                    command=self.user_manager.add_user(username),
+                    description=f"Ensure regular user exists: {username}",
+                    requires_sudo=True,
+                )
+            )
+            commands.append(
+                HardeningCommand(
+                    command=self.user_manager.set_user_password(username, password),
+                    description=f"Set password for regular user: {username}",
+                    requires_sudo=True,
+                )
+            )
+
+            if username in self.current_sudo_users:
+                commands.append(
+                    HardeningCommand(
+                        command=self.user_manager.remove_user_from_sudoers(username),
+                        description=f"Remove sudo access from regular user: {username}",
+                        requires_sudo=True,
+                    )
+                )
+
+        unauthorized_valid_users = sorted(
+            self.current_valid_users
+            - self.required_users
+            - self.do_not_change_users
+        )
+        for username in unauthorized_valid_users:
+            if username in self.current_sudo_users:
+                commands.append(
+                    HardeningCommand(
+                        command=self.user_manager.remove_user_from_sudoers(username),
+                        description=(
+                            f"Remove sudo access from unauthorized user: {username}"
+                        ),
+                        requires_sudo=True,
+                    )
+                )
+            commands.append(
+                HardeningCommand(
+                    command=self.user_manager.lock_user(username),
+                    description=f"Lock unauthorized user: {username}",
+                    requires_sudo=True,
+                )
+            )
+
+        if password_records:
+            commands.insert(
+                0,
+                PythonAction(
+                    function=self._write_password_log,
+                    description=f"Write password log to {self.password_log_path}",
+                    args=(self.password_log_path, list(password_records)),
+                    requires_sudo=False,
+                ),
+            )
+
         return commands
-    
-    # TODO: write this as a script to /root/generate_users_report.sh, then execute it in the next command
-    def _generate_user_report_command(self) -> str:
-        """Generate command to create user security report"""
-        return """
-        cat > /root/user_security_report.txt << 'EOF'
-User Security Report - Generated by CCDC User Hardening Module
-============================================================
 
-Regular Users (No sudo access):
-EOF
-
-for user in $(echo '{}' | tr ',' '\\n'); do
-    if id "$user" >/dev/null 2>&1; then
-        echo "✓ $user - $(getent passwd $user | cut -d: -f5) - Shell: $(getent passwd $user | cut -d: -f7)" >> /root/user_security_report.txt
-        groups "$user" | grep -E '(sudo|wheel|admin)' >/dev/null && echo "  WARNING: User has sudo access!" >> /root/user_security_report.txt
-    fi
-done
-
-echo "" >> /root/user_security_report.txt
-echo "Super Users (Sudo access granted):" >> /root/user_security_report.txt
-
-for user in $(echo '{}' | tr ',' '\\n'); do
-    if id "$user" >/dev/null 2>&1; then
-        echo "✓ $user - $(getent passwd $user | cut -d: -f5) - Shell: $(getent passwd $user | cut -d: -f7)" >> /root/user_security_report.txt
-        groups "$user" | grep -E '(sudo|wheel|admin)' >/dev/null || echo "  WARNING: User lacks sudo access!" >> /root/user_security_report.txt
-    fi
-done
-
-echo "" >> /root/user_security_report.txt
-echo "Protected Accounts (No changes made):" >> /root/user_security_report.txt
-
-for user in $(echo '{}' | tr ',' '\\n'); do
-    if id "$user" >/dev/null 2>&1; then
-        echo "✓ $user - $(getent passwd $user | cut -d: -f5) - Shell: $(getent passwd $user | cut -d: -f7)" >> /root/user_security_report.txt
-    fi
-done
-
-echo "" >> /root/user_security_report.txt
-echo "Secured/Locked Accounts:" >> /root/user_security_report.txt
-
-for user in $(awk -F: '$3 >= 1000 && $1 != "nobody" {{ print $1 }}' /etc/passwd); do
-    shell=$(getent passwd $user | cut -d: -f7)
-    if [[ "$shell" == "/usr/sbin/nologin" || "$shell" == "/bin/false" ]]; then
-        echo "🔒 $user - Shell disabled: $shell" >> /root/user_security_report.txt
-    fi
-done
-
-echo "" >> /root/user_security_report.txt
-echo "Report generated: $(date)" >> /root/user_security_report.txt
-echo "User security hardening completed successfully!" >> /root/user_security_report.txt
-
-echo "User security report generated at /root/user_security_report.txt"
-        """.format(
-            ",".join(self.users_config.get('regular_users', {}).keys()),
-            ",".join(self.users_config.get('super_users', {}).keys()),
-            ",".join(self.users_config.get('dontchange_accounts', {}).keys())
-        ).strip()
-    
     def is_applicable(self) -> bool:
-        """This module is applicable to all Unix-like systems"""
+        """This module is applicable to all Unix-like systems."""
         return True
