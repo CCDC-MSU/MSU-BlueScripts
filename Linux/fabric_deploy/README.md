@@ -46,7 +46,7 @@ This project is designed to be run from a central "jumpbox" or administrative ma
 
 4.  **Configure the Framework**:
     *   **`hosts.txt`**: Add the IP addresses or hostnames of your target machines to this file, along with their credentials.
-    *   **`users.json`**: If you are using the `user_hardening` module, configure your authorized users in this file.
+    *   **`users.json`**: If you are using the `user_hardening` module, configure your authorized users and passwords here; missing passwords are generated and written back (use `__PER_HOST__` for per-host unique).
 
 ## Usage
 
@@ -135,7 +135,7 @@ This framework includes a powerful testing system for developing and validating 
 
 ## User Hardening
 
-The `user_hardening` module is one of the most critical components of this framework. It manages `sudo` privileges, passwords, and unauthorized account handling, but it does not create missing users. For more detailed information, please see the `README_user_hardening.md` file.
+The `user_hardening` module manages `sudo` privileges, sets passwords from `users.json` (generating and writing back any missing values), creates missing users defined in `users.json`, and locks unauthorized valid-shell accounts. Passwords used are recorded locally under `logs/user-hardening/<host>/passwords_<timestamp>.txt`. The default hardening pipeline does not include this module; run it via `fab test-module --module=user_hardening` or add it to the orchestrator. For more detailed information, please see the `README_user_hardening.md` file.
 
 ## Architecture
 

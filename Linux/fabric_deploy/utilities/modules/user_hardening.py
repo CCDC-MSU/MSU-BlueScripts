@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 class UserHardeningModule(HardeningModule):
     """User account hardening based on users.json."""
 
+    PER_HOST_SENTINEL = "__PER_HOST__"
     _password_lock = threading.Lock()
     _password_cache: Dict[str, str] = {}
     _per_host_users: Set[str] = set()
@@ -92,12 +93,12 @@ class UserHardeningModule(HardeningModule):
                 users.update(value)
         return users
 
-    def _normalize_user_map(self, value: object) -> Tuple[Dict[str, object], bool]:
+    def _normalize_user_map(self, value: object) -> Dict[str, object]:
         if isinstance(value, dict):
-            return dict(value), False
+            return dict(value)
         if isinstance(value, list):
-            return {user: None for user in value}, True
-        return {}, False
+            return {user: None for user in value}
+        return {}
 
     def _ensure_passwords_loaded(self) -> Dict:
         config_path = os.path.join(os.path.dirname(__file__), "../../users.json")
@@ -106,12 +107,8 @@ class UserHardeningModule(HardeningModule):
                 return UserHardeningModule._config_cache
 
             config = self._load_users_config()
-            regular_map, regular_from_list = self._normalize_user_map(
-                config.get("regular_users", {})
-            )
-            super_map, super_from_list = self._normalize_user_map(
-                config.get("super_users", {})
-            )
+            regular_map = self._normalize_user_map(config.get("regular_users", {}))
+            super_map = self._normalize_user_map(config.get("super_users", {}))
 
             config["regular_users"] = regular_map
             config["super_users"] = super_map
@@ -122,22 +119,26 @@ class UserHardeningModule(HardeningModule):
 
             def populate_passwords(
                 user_map: Dict[str, object],
-                from_list: bool,
             ) -> None:
                 nonlocal changed
                 for username, value in user_map.items():
-                    if isinstance(value, str) and value.strip():
-                        password_cache[username] = value
-                        continue
+                    if isinstance(value, str):
+                        trimmed = value.strip()
+                        if trimmed == self.PER_HOST_SENTINEL:
+                            if value != self.PER_HOST_SENTINEL:
+                                user_map[username] = self.PER_HOST_SENTINEL
+                                changed = True
+                            per_host_users.add(username)
+                            continue
+                        if trimmed:
+                            password_cache[username] = value
+                            continue
 
                     if value is None or (isinstance(value, str) and value.strip() == ""):
-                        if from_list:
-                            password = generate_password()
-                            user_map[username] = password
-                            password_cache[username] = password
-                            changed = True
-                        else:
-                            per_host_users.add(username)
+                        password = generate_password()
+                        user_map[username] = password
+                        password_cache[username] = password
+                        changed = True
                         continue
 
                     password = str(value)
@@ -145,8 +146,8 @@ class UserHardeningModule(HardeningModule):
                     password_cache[username] = password
                     changed = True
 
-            populate_passwords(regular_map, regular_from_list)
-            populate_passwords(super_map, super_from_list)
+            populate_passwords(regular_map)
+            populate_passwords(super_map)
 
             per_host_users -= set(password_cache)
 
