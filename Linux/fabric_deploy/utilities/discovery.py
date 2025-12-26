@@ -596,6 +596,7 @@ class SystemDiscovery:
             'brew':     'brew --version',
             'snap':     'snap --version',
             'flatpak':  'flatpak --version',
+            'sbopkg': 'sbopkg -v',
             'slackpkg': 'slackpkg version'
         }
         

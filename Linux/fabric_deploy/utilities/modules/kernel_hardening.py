@@ -66,7 +66,8 @@ class KernelHardeningModule(HardeningModule):
             ("net.ipv4.icmp_ignore_bogus_error_responses", "1", "Ignore bogus ICMP errors"),
             ("net.ipv4.tcp_syncookies", "1", "Enable TCP SYN cookies"),
             ("net.ipv4.conf.all.rp_filter", "1", "Enable reverse path filtering"),
-            
+            ("net.ipv4.tcp_rfc1337", "1", "protect against TIME-WAIT assassination"),
+
             # Kernel security
             ("kernel.randomize_va_space", "2", "Enable ASLR"),
             ("kernel.kptr_restrict", "2", "Restrict kernel pointer access"),
