@@ -1,4 +1,6 @@
 # **Project TODO & Bug List**
+- be able to upload scripts to /root/tools for blue teamers to use
+- generate proper reports of what actions were taken, what worked and what didn't and what needs to be fixed
 
 ## 0. Start Contributing Now
 

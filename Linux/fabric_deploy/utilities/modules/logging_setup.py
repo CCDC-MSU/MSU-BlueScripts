@@ -39,7 +39,7 @@ Linux
 """
 
 from typing import List
-from .base import HardeningModule, HardeningCommand
+from .base import HardeningModule, HardeningCommand, HardeningResult
 from ..discovery import OSFamily
 
 
@@ -548,12 +548,13 @@ kern.warning					/dev/console
         for i, cmd in enumerate(commands, 1):
             if dry_run:
                 logger.info(f"[{i}/{len(commands)}] DRY RUN: {cmd.description}")
-                self.results.append({
-                    'success': True,
-                    'command': cmd.command,
-                    'description': cmd.description,
-                    'output': "DRY RUN - not executed"
-                })
+                self.results.append(HardeningResult(
+                    success=True,
+                    command=cmd.command,
+                    description=cmd.description,
+                    output="DRY RUN - not executed",
+                    already_applied=False
+                ))
             else:
                 logger.info(f"[{i}/{len(commands)}] {cmd.description}")
                 result = self.apply_command(cmd)

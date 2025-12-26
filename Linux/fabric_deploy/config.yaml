@@ -1,39 +1,18 @@
 # Fabric Deployment Configuration
 
-# Connection defaults
-connection:
-  user: root
-  # password: "your_password_here" # Optional default password
+# Fabric Deployment Configuration
 
-# Script Categories
-# Group scripts by function for selective deployment
-script_categories:
-  audit:
-    - "all/check-go-binaries.sh"
-  hardening:
-    - "hardening/basic_setup.sh"
-    - "hardening/firewall.sh"
-  web:
-    - "apps/nginx_setup.sh"
+# Default Scripts
+# These scripts will run if no scripts are specified in the command line
+default_scripts:
+  - "all/archive_ssh_keys.sh"
+  - "all/blue-sweet-tooth.sh"
+  - "all/check-go-binaries.sh"
+  - "all/diff-changes.sh"
+  - "all/environment-variables-scanner.sh"
+  - "all/fix-file-permissions.sh"
+  - "all/pre-hardening-snapshot.sh"
+  - "all/search-pii.sh"
+  - "all/systemd-hunting.sh"
+  - "all/user-profiles-compiler.sh"
 
-# Deployment Profiles
-# Define which scripts run automatically for different OS families
-deployment_profiles:
-  # Generic profile (fallback)
-  generic:
-    priority_scripts:
-      - "all/check-go-binaries.sh"
-    secondary_scripts: []
-
-  # Debian/Ubuntu profile
-  debian_ubuntu:
-    priority_scripts:
-      - "all/check-go-binaries.sh"
-    secondary_scripts:
-      - "hardening/basic_setup.sh"
-
-  # RHEL/CentOS profile
-  centos_rhel:
-    priority_scripts:
-      - "all/check-go-binaries.sh"
-    secondary_scripts: []

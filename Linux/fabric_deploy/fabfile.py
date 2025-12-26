@@ -309,8 +309,17 @@ def discover_all(c, hosts_file='hosts.txt'):
 
 @task
 def harden(c, hosts_file='hosts.txt', dry_run=False, modules=None, 
-           script_categories=None, priority_only=False):
-    """Apply hardening configurations to discovered hosts"""
+           scripts=None):
+    """
+    Apply hardening configurations to discovered hosts
+    
+    Args:
+        hosts_file: Path to hosts file
+        dry_run: If True, only show what would be done
+        modules: Comma-separated list of modules to run (e.g. 'user_hardening,ssh')
+        scripts: Comma-separated list of scripts (e.g. 'check-go-binaries.sh') or 'ALL'
+                 If not provided, runs default_scripts from config
+    """
     _configure_parallel_logging()
     console_logger = _get_console_logger()
 
@@ -344,13 +353,43 @@ def harden(c, hosts_file='hosts.txt', dry_run=False, modules=None,
         modules = [m.strip() for m in modules.split(',')]
         console_logger.info(f"Applying modules: {modules}")
 
-    # Parse script categories if provided
-    if script_categories:
-        script_categories = [c.strip() for c in script_categories.split(',')]
-        console_logger.info(f"Script categories: {script_categories}")
+    # Resolve scripts to run
+    # 1. If scripts arg provides, use that
+    # 2. If 'ALL' is provided, load all from scripts/all/
+    # 3. Else, use default_scripts from config.yaml
+    script_paths = []
+    
+    # Load config for defaults
+    try:
+        config = load_config()
+    except Exception:
+        config = {}
 
-    if priority_only:
-        console_logger.info("Priority scripts only: enabled")
+    if scripts:
+        if scripts.upper() == 'ALL':
+            # List all .sh files in scripts/all
+            scripts_dir = Path(__file__).parent / "scripts/all"
+            script_paths = [f"all/{s.name}" for s in scripts_dir.glob("*.sh")]
+            console_logger.info(f"Scripts mode: ALL ({len(script_paths)} scripts)")
+        else:
+            # Split comma list
+            # We assume user provides path relative to scripts dir or base name?
+            # Implementation assumed relative path, e.g. "all/foo.sh" or just "foo.sh"
+            # To be safe, if "foo.sh" is given, check "all/foo.sh" or "hardening/foo.sh"
+            requested = [s.strip() for s in scripts.split(',')]
+            # Simple resolution: if path contains /, use it. If not, assume all/
+            resolved = []
+            for r in requested:
+                if '/' in r:
+                    resolved.append(r)
+                else:
+                    resolved.append(f"all/{r}")
+            script_paths = resolved
+            console_logger.info(f"Scripts mode: Custom ({len(script_paths)} scripts)")
+    else:
+        # Use defaults
+        script_paths = config.get('default_scripts', [])
+        console_logger.info(f"Scripts mode: Default ({len(script_paths)} scripts)")
 
     console_logger.info(f"Found {len(servers)} servers to harden")
     console_logger.info("Logs: logs/harden/<host>/<timestamp>.log")
@@ -384,11 +423,11 @@ def harden(c, hosts_file='hosts.txt', dry_run=False, modules=None,
                 if server_creds.port != 22:
                     connect_kwargs['port'] = server_creds.port
 
-                config = Config(overrides=config_overrides)
+                fabric_config = Config(overrides=config_overrides)
 
                 # Run discovery and hardening
                 with Connection(server_creds.host, user=server_creds.user,
-                              config=config, connect_kwargs=connect_kwargs) as conn:
+                               config=fabric_config, connect_kwargs=connect_kwargs) as conn:
 
                     # First discover the system
                     discovery = SystemDiscovery(conn, server_creds)
@@ -408,11 +447,21 @@ def harden(c, hosts_file='hosts.txt', dry_run=False, modules=None,
                     result = deployer.deploy_hardening(
                         dry_run=dry_run,
                         modules=modules,
-                        script_categories=script_categories,
-                        priority_only=priority_only
+                        script_paths=script_paths
                     )
+                    
+                    # If tools upload requested (or always?) 
+                    # Let's enable tools upload as part of hardening flow if not disabled
+                    # Currently we do it as a separate task, but maybe good to do it here?
+                    # sticking to task separation or adding a call here?
+                    # The plan said "Uploads tools to /root/tools" as part of Execution.
+                    # We'll just call the upload logic here if feasible, or let user call separate task.
+                    # To be robust, let's implement the upload_tools task and call it here.
+                    _upload_tools_internal(conn)
 
                     logger.info(f"Hardening completed for {server_creds.host}")
+                    report_file = result.get('report_file', 'N/A')
+                    logger.info(f"Report generated: {report_file}")
                     logger.info(f"Summary:\n{result['summary']}")
 
                     results = result.get('results', {})
@@ -427,11 +476,14 @@ def harden(c, hosts_file='hosts.txt', dry_run=False, modules=None,
                     return {
                         'host': server_creds.host,
                         'status': status,
-                        'log_file': str(log_path)
+                        'log_file': str(log_path),
+                        'report_file': report_file
                     }
 
             except Exception as e:
                 logger.error(f"Hardening failed for {server_creds.host}: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
                 return {
                     'host': server_creds.host,
                     'status': f'error: {e}',
@@ -472,6 +524,82 @@ def harden(c, hosts_file='hosts.txt', dry_run=False, modules=None,
         console_logger.error(f"Hardening failed for: {', '.join(failed_hosts)}")
 
     return successful_hardenings, failed_hardenings
+
+
+@task
+def upload_tools(c, hosts_file='hosts.txt'):
+    """Upload tools directory to remote servers"""
+    _configure_parallel_logging()
+    console_logger = _get_console_logger()
+    
+    servers = parse_hosts_file(hosts_file)
+    if not servers:
+        return
+        
+    def _upload_host(server_creds):
+        host_id = _host_label(server_creds)
+        with _host_log_handler("tools", host_id) as log_path:
+             try:
+                # Set up connection (similar boiler plate)
+                connect_kwargs = {'allow_agent': False, 'look_for_keys': False}
+                config_overrides = {'sudo': {'password': None}}
+                if server_creds.key_file:
+                    connect_kwargs['key_filename'] = server_creds.key_file
+                elif server_creds.password:
+                    connect_kwargs['password'] = server_creds.password
+                    config_overrides['sudo']['password'] = server_creds.password
+                
+                # Check for port
+                if server_creds.port != 22:
+                    connect_kwargs['port'] = server_creds.port
+                
+                fabric_config = Config(overrides=config_overrides)
+                
+                with Connection(server_creds.host, user=server_creds.user,
+                               config=fabric_config, connect_kwargs=connect_kwargs) as conn:
+                    _upload_tools_internal(conn)
+                    return {'host': server_creds.host, 'status': 'ok'}
+             except Exception as e:
+                 logger.error(f"Tools upload failed: {e}")
+                 return {'host': server_creds.host, 'status': 'failed'}
+
+    with ThreadPoolExecutor(max_workers=len(servers)) as executor:
+        list(executor.map(_upload_host, servers))
+
+def _upload_tools_internal(conn):
+    """Internal helper to sync tools dir"""
+    local_tools_path = Path(__file__).parent / "tools"
+    if not local_tools_path.exists():
+        logger.warning("No local 'tools' directory found to upload")
+        return
+
+    remote_tools_path = "/root/tools"
+    
+    # Simple recursive upload is tricky with Fabric 2 without 'put -r' equivalent easily
+    # But we can tar it up, upload, untar
+    
+    logger.info("Uploading tools...")
+    conn.sudo(f"mkdir -p {remote_tools_path}")
+    
+    # We will just upload individual files for now or use tar
+    import tarfile
+    from io import BytesIO
+    
+    # Create tar in memory
+    fh = BytesIO()
+    with tarfile.open(fileobj=fh, mode='w:gz') as tar:
+        tar.add(local_tools_path, arcname='.')
+    tar_data = fh.getvalue()
+    
+    # Upload tar
+    tmp_tar = "/tmp/ccdc_tools.tar.gz"
+    conn.put(BytesIO(tar_data), tmp_tar)
+    
+    # Extract
+    conn.sudo(f"tar -xzf {tmp_tar} -C {remote_tools_path}")
+    conn.sudo(f"rm {tmp_tar}")
+    logger.info(f"Tools uploaded to {remote_tools_path}")
+
 
 
 @task

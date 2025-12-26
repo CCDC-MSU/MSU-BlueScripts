@@ -53,8 +53,10 @@ def parse_hosts_file(hosts_file: str) -> List[ServerCredentials]:
                     parts = line.split(':')
                     
                     if len(parts) == 1:
-                        # Just host, use config defaults
+                        # Just host, rely on SSH config or fabric defaults
+                        # We no longer pull defaults from config.yaml's connection section as requested
                         host = parts[0]
+                        # Use root/password defaults if they were in config (backward compat) but preferred is SSH key/config
                         user = config.get('connection', {}).get('user', 'root')
                         password = config.get('connection', {}).get('password')
                         servers.append(ServerCredentials(host=host, user=user, password=password))
