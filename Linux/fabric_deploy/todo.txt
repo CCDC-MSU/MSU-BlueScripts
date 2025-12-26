@@ -1,0 +1,28 @@
+============= check for unauthorized sudo =======
+sudo	NOPASSWD:	/etc/sudoers
+doas	nopass	/etc/doas.conf
+run0	polkit.Result.YES	/etc/polkit-1/rules.d/*.rules
+pkexec	polkit.Result.YES	/etc/polkit-1/rules.d/*.rules
+su	Not natively supported*	Built-in (standard behavior requires password)
+
+====== small tasks ===
+fix time    sudo timedatectl set-ntp true
+check internet works (ping 1.1.1.1)
+check dns works (resolve example.com)
+check locale settings (language, time)
+review boot logs
+check mounts and fstabs
+Validate repo URLs, mirrorlists, proxies, and TLS CA bundles (bad CA store breaks everything).
+check ulimit to make sure they are sane
+check mail for root Mail spool
+
+------- related commands ----------
+uptime, w, last reboot
+df -h, df -ih
+free -h (or vmstat 1 5)
+dmesg -T | tail -200 (or journalctl -p warning..alert -b)
+ps aux --sort=-%mem | head, ps aux --sort=-%cpu | head
+ss -tulpn (or netstat -tulpn)
+systemctl --failed (if systemd)
+crontab -l + check cron service / timers
+Disk health: smartctl -H / nvme smart-log (if tools installed)

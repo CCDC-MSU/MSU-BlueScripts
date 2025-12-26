@@ -1,13 +1,21 @@
 {
   "regular_users": {
-    "alice": "Secureallib234il!"
+    "alex": "preset_password_here_neet1337",
+    "blair": "xxxxx",
+    "casey": "",
+    "devon": "",
+    "jordan": "",
+    "morgan": "",
+    "quinn": "",
+    "riley": "__PER_HOST__"
   },
   "super_users": {
-    "bob": "buil234dgcecH!"
+    "sam": "",
+    "taylor": ""
   },
-  "dontchange_accounts": {
+  "do_not_change_users": {
     "black-team-acc": "do not change password",
-    "scan-agent": "added by the hardenig script",
-    "CCDC-ADMIN": "dont' want to brick the sys during testing"
-    }
+    "root": "don't mess with root while testing",
+    "scan-agent": "added by the hardenig script"
+  }
 }
