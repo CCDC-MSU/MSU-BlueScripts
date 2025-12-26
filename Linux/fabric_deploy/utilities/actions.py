@@ -1,345 +1,827 @@
+import logging
 from typing import List
+from .models import SudoersInfo
 
-# This class exports 4 commands to manage users, all based on installed commands
-# add_user(self, username: str, password: str) -> str:
-# add_sudo_user(self, username: str, password: str) -> str:
-# remove_user(self, username: str) -> str:
-# def remove_user_from_sudoers(self, username: str) -> str:
+logger = logging.getLogger(__name__)
+
 
 class UserManager:
-    def __init__(self, available_commands :list[str]):
-        self.available_commands = available_commands
-        
+    def __init__(self, available_commands: list[str], groups: list[str], sudoers_info: SudoersInfo):
+        self.available_commands = list(available_commands or [])
+        self.available_groups = list(groups or [])
+        self.sudoers_groups: list[str] = sudoers_info.sudoer_group_all
+        logger.debug(
+            "UserManager init: available_commands=%d available_groups=%d sudoers_groups=%s",
+            len(self.available_commands),
+            len(self.available_groups),
+            self.sudoers_groups,
+        )
+
+    def _log_choice(self, action: str, choice: str) -> None:
+        logger.debug("UserManager %s: %s", action, choice)
+
     def _has(self, cmd: str) -> bool:
         return cmd in set(self.available_commands or [])
 
     @staticmethod
     def _sh_quote(s: str) -> str:
-        # POSIX-sh safe single-quote escaping
+        """POSIX-sh safe single-quote escaping"""
         return "'" + s.replace("'", "'\"'\"'") + "'"
 
-    def add_user(self, username: str, password: str) -> str:
-        """Return a sh-compatible command that adds a new regular user and sets its password."""
+    # ============================================================================
+    # ATOMIC OPERATIONS
+    # ============================================================================
+
+    def add_user(self, username: str) -> str:
+        """Create a new user account (no password set)."""
         u = self._sh_quote(username)
-        p = self._sh_quote(password)
 
         # macOS
         if self._has("dscl"):
-            # Create local user with next available UID, default group 20 (staff), and home dir
+            self._log_choice(f"add_user: {u}", "dscl")
             return f"""set -eu
 u={u}
-p={p}
 
 # Create user only if missing
 if dscl . -read "/Users/$u" >/dev/null 2>&1; then
-  :
-else
-  max_uid="$(dscl . -list /Users UniqueID 2>/dev/null | awk '{{print $2}}' | awk 'BEGIN{{m=500}} {{if($1>m)m=$1}} END{{print m}}')"
-  new_uid="$((max_uid + 1))"
-  dscl . -create "/Users/$u"
-  dscl . -create "/Users/$u" UserShell "/bin/bash"
-  dscl . -create "/Users/$u" RealName "$u"
-  dscl . -create "/Users/$u" UniqueID "$new_uid"
-  dscl . -create "/Users/$u" PrimaryGroupID 20
-  dscl . -create "/Users/$u" NFSHomeDirectory "/Users/$u"
-  mkdir -p "/Users/$u"
-  chown "$u":staff "/Users/$u" || true
+  exit 0
 fi
 
-# Set password
-dscl . -passwd "/Users/$u" "$p"
-"""
-
-        # FreeBSD / BSD
-        if self._has("pw"):
-            # pw(8) can read password from stdin with -h 0
-            return f"""set -eu
-u={u}
-p={p}
-
-if id "$u" >/dev/null 2>&1; then
-  :
-else
-  # create user with home dir
-  pw useradd -n "$u" -m -s /bin/sh
-fi
-
-# set password (stdin)
-printf '%s\\n' "$p" | pw usermod -n "$u" -h 0
-"""
-
-        # Linux / BusyBox / general
-        # Prefer shadow-utils if available
-        if self._has("useradd"):
-            add_cmd = """id -u "$u" >/dev/null 2>&1 || useradd -m -s /bin/sh "$u" """
-        elif self._has("adduser"):
-            # Works for BusyBox (adduser -D) and Debian/Ubuntu (adduser --disabled-password)
-            add_cmd = """id -u "$u" >/dev/null 2>&1 || (adduser -D "$u" 2>/dev/null || adduser --disabled-password --gecos "" "$u")"""
-        else:
-            # last-resort minimal local account creation (Linux-style files); risky, but better than nothing
-            add_cmd = """id -u "$u" >/dev/null 2>&1 || (echo "No supported user creation tool found" >&2; exit 1)"""
-
-        # Password setting
-        if self._has("chpasswd"):
-            pass_cmd = """printf '%s:%s\\n' "$u" "$p" | chpasswd"""
-        elif self._has("passwd"):
-            # Not universal, but works on many (including lots of BusyBox builds)
-            pass_cmd = """printf '%s\\n%s\\n' "$p" "$p" | passwd "$u" >/dev/null"""
-        else:
-            pass_cmd = """echo "No supported password tool found" >&2; exit 1"""
-
-        return f"""set -eu
-u={u}
-p={p}
-
-{add_cmd}
-{pass_cmd}
-"""
-
-    def add_sudo_user(self, username: str, password: str) -> str:
-        """Return a sh-compatible command that adds a user, sets password, and grants sudo/admin."""
-        u = self._sh_quote(username)
-        p = self._sh_quote(password)
-
-        # macOS: add to admin group
-        if self._has("dscl") and self._has("dseditgroup"):
-            return f"""set -eu
-u={u}
-p={p}
-
-# ensure user exists + password set
-{self.add_user(username, password)}
-
-# grant admin
-dseditgroup -o edit -a "$u" -t user admin
-"""
-
-        # BSD: wheel is typical, but we’ll probe
-        if self._has("pw"):
-            return f"""set -eu
-u={u}
-p={p}
-
-# ensure user exists + password set
-{self.add_user(username, password)}
-
-# Determine sudo-equivalent group (prefer wheel, else sudo if present)
-grp=""
-if command -v getent >/dev/null 2>&1; then
-  if getent group wheel >/dev/null 2>&1; then grp="wheel"; fi
-  if [ -z "$grp" ] && getent group sudo >/dev/null 2>&1; then grp="sudo"; fi
-else
-  if grep -q '^wheel:' /etc/group 2>/dev/null; then grp="wheel"; fi
-  if [ -z "$grp" ] && grep -q '^sudo:' /etc/group 2>/dev/null; then grp="sudo"; fi
-fi
-
-if [ -n "$grp" ]; then
-  pw groupmod "$grp" -m "$u" || true
-else
-  # Fallback: sudoers.d drop-in if sudo is installed and includedir exists
-  if [ -d /usr/local/etc/sudoers.d ] && command -v visudo >/dev/null 2>&1; then
-    f="/usr/local/etc/sudoers.d/$u"
-    printf '%s ALL=(ALL) ALL\\n' "$u" > "$f"
-    chmod 0440 "$f"
-    visudo -cf "$f"
-  fi
-fi
-"""
-
-        # Linux: add user, then grant via group if it exists; else sudoers.d drop-in
-        # Pick best tool for adding to groups: usermod, gpasswd, adduser
-        if self._has("usermod"):
-            group_add = """usermod -aG "$grp" "$u" """
-        elif self._has("gpasswd"):
-            group_add = """gpasswd -a "$u" "$grp" """
-        elif self._has("adduser"):
-            # Debian style: adduser USER GROUP
-            group_add = """adduser "$u" "$grp" """
-        else:
-            group_add = """echo "No supported tool to add user to groups" >&2; exit 1"""
-
-        sudoers_dir = "/etc/sudoers.d"
-
-        visudo_check = "command -v visudo >/dev/null 2>&1"
-
-        return f"""set -eu
-u={u}
-p={p}
-
-# ensure user exists + password set
-{self.add_user(username, password)}
-
-# Determine sudo-equivalent group (prefer sudo, else wheel)
-grp=""
-if command -v getent >/dev/null 2>&1; then
-  if getent group sudo >/dev/null 2>&1; then grp="sudo"; fi
-  if [ -z "$grp" ] && getent group wheel >/dev/null 2>&1; then grp="wheel"; fi
-else
-  if grep -q '^sudo:' /etc/group 2>/dev/null; then grp="sudo"; fi
-  if [ -z "$grp" ] && grep -q '^wheel:' /etc/group 2>/dev/null; then grp="wheel"; fi
-fi
-
-if [ -n "$grp" ]; then
-  {group_add} || true
-else
-  # Fallback: sudoers.d entry if possible
-  if [ -d {sudoers_dir} ] && {visudo_check}; then
-    f="{sudoers_dir}/$u"
-    printf '%s ALL=(ALL) ALL\\n' "$u" > "$f"
-    chmod 0440 "$f"
-    visudo -cf "$f"
-  else
-    echo "No sudo/wheel group found and no sudoers.d+visudo available" >&2
-    exit 1
-  fi
-fi
-"""
-
-    def remove_user(self, username: str) -> str:
-        """Return a sh-compatible command that removes a user account (and home if supported)."""
-        u = self._sh_quote(username)
-
-        # macOS
-        if self._has("dscl"):
-            return f"""set -eu
-u={u}
-
-if dscl . -read "/Users/$u" >/dev/null 2>&1; then
-  homedir="$(dscl . -read "/Users/$u" NFSHomeDirectory 2>/dev/null | awk '{{print $2}}' || true)"
-  dscl . -delete "/Users/$u" || true
-  if [ -n "${{homedir:-}}" ] && [ -d "$homedir" ]; then rm -rf "$homedir"; fi
-fi
+max_uid="$(dscl . -list /Users UniqueID 2>/dev/null | awk '{{print $2}}' | awk 'BEGIN{{m=500}} {{if($1>m)m=$1}} END{{print m}}')"
+new_uid="$((max_uid + 1))"
+dscl . -create "/Users/$u"
+dscl . -create "/Users/$u" UserShell "/bin/bash"
+dscl . -create "/Users/$u" RealName "$u"
+dscl . -create "/Users/$u" UniqueID "$new_uid"
+dscl . -create "/Users/$u" PrimaryGroupID 20
+dscl . -create "/Users/$u" NFSHomeDirectory "/Users/$u"
+mkdir -p "/Users/$u"
+chown "$u":staff "/Users/$u" || true
 """
 
         # BSD
         if self._has("pw"):
+            self._log_choice(f"add_user: {u}", "pw")
             return f"""set -eu
 u={u}
 
 if id "$u" >/dev/null 2>&1; then
-  pw userdel -n "$u" -r || pw userdel -n "$u" || true
+  exit 0
 fi
+
+pw useradd -n "$u" -m -s /bin/sh
 """
 
         # Linux
-        if self._has("userdel"):
+        if self._has("useradd"):
+            self._log_choice(f"add_user: {u}", "useradd")
             return f"""set -eu
 u={u}
-id -u "$u" >/dev/null 2>&1 || exit 0
-userdel -r "$u" || userdel "$u"
+id -u "$u" >/dev/null 2>&1 && exit 0
+useradd -m -s /bin/sh "$u"
 """
-        if self._has("deluser"):
+        
+        if self._has("adduser"):
+            self._log_choice(f"add_user: {u}", "adduser")
             return f"""set -eu
 u={u}
-id -u "$u" >/dev/null 2>&1 || exit 0
-deluser --remove-home "$u" 2>/dev/null || deluser "$u"
+id -u "$u" >/dev/null 2>&1 && exit 0
+adduser -D "$u" 2>/dev/null || adduser --disabled-password --gecos "" "$u"
 """
-        if self._has("deluser"):  # kept for clarity; above handles
-            return f"""set -eu
-u={u}
-id -u "$u" >/dev/null 2>&1 || exit 0
-deluser "$u"
-"""
-        if self._has("deluser") is False and self._has("adduser") and self._has("busybox"):
-            return f"""set -eu
-u={u}
-id -u "$u" >/dev/null 2>&1 || exit 0
-deluser "$u" || true
-"""
-        # Last-resort
+
+        self._log_choice(f"add_user: {u}", "no supported tool")
         return f"""set -eu
 u={u}
-echo "No supported user deletion tool found for $u" >&2
+echo "No supported user creation tool found" >&2
 exit 1
 """
 
-    def remove_user_from_sudoers(self, username: str) -> str:
-        """Return a sh-compatible command that removes sudo/admin access for a user."""
+    def set_user_password(self, username: str, password: str) -> str:
+        """Set or change a user's password."""
         u = self._sh_quote(username)
+        p = self._sh_quote(password)
 
-        # macOS: remove from admin group
-        if self._has("dseditgroup"):
+        # macOS
+        if self._has("dscl"):
+            self._log_choice(f"set_user_password: {u}", "dscl")
             return f"""set -eu
 u={u}
-dseditgroup -o edit -d "$u" -t user admin || true
+p={p}
+
+if ! dscl . -read "/Users/$u" >/dev/null 2>&1; then
+  echo "User $u does not exist" >&2
+  exit 1
+fi
+
+dscl . -passwd "/Users/$u" "$p"
 """
 
-        # BSD: try wheel/sudo group, then sudoers.d
+        # BSD
         if self._has("pw"):
+            self._log_choice(f"set_user_password: {u}", "pw")
             return f"""set -eu
 u={u}
+p={p}
 
-# Remove sudoers.d drop-in if present (common paths)
-rm -f "/usr/local/etc/sudoers.d/$u" "/etc/sudoers.d/$u" 2>/dev/null || true
+if ! id "$u" >/dev/null 2>&1; then
+  echo "User $u does not exist" >&2
+  exit 1
+fi
 
-# Remove from wheel/sudo groups if they exist
-for grp in wheel sudo; do
-  if command -v getent >/dev/null 2>&1; then
-    getent group "$grp" >/dev/null 2>&1 || continue
-  else
-    grep -q "^$grp:" /etc/group 2>/dev/null || continue
-  fi
-  pw groupmod "$grp" -d "$u" 2>/dev/null || true
-done
+printf '%s\\n' "$p" | pw usermod -n "$u" -h 0
 """
 
-        # Linux: prefer gpasswd/deluser, else usermod recalculation is messy; also remove sudoers.d entry
-        lines = [f"set -eu", f"u={u}", "", "rm -f \"/etc/sudoers.d/$u\" 2>/dev/null || true", ""]
+        # Linux - prefer chpasswd
+        if self._has("chpasswd"):
+            self._log_choice(f"set_user_password: {u}", "chpasswd")
+            return f"""set -eu
+u={u}
+p={p}
 
-        # group removals
-        if self._has("gpasswd"):
-            lines.append('for grp in sudo wheel; do')
-            lines.append('  if command -v getent >/dev/null 2>&1; then')
-            lines.append('    getent group "$grp" >/dev/null 2>&1 || continue')
-            lines.append('  else')
-            lines.append('    grep -q "^$grp:" /etc/group 2>/dev/null || continue')
-            lines.append('  fi')
-            lines.append('  gpasswd -d "$u" "$grp" >/dev/null 2>&1 || true')
-            lines.append('done')
-        elif self._has("deluser"):
-            lines.append('for grp in sudo wheel; do')
-            lines.append('  if command -v getent >/dev/null 2>&1; then')
-            lines.append('    getent group "$grp" >/dev/null 2>&1 || continue')
-            lines.append('  else')
-            lines.append('    grep -q "^$grp:" /etc/group 2>/dev/null || continue')
-            lines.append('  fi')
-            lines.append('  deluser "$u" "$grp" >/dev/null 2>&1 || true')
-            lines.append('done')
-        else:
-            # best-effort: if usermod exists we can attempt "gpasswd -d" alternative not available.
-            lines.append('echo "No supported group removal tool (gpasswd/deluser) found; only removed sudoers.d drop-in." >&2')
+if ! id -u "$u" >/dev/null 2>&1; then
+  echo "User $u does not exist" >&2
+  exit 1
+fi
 
-        return "\n".join(lines) + "\n"
+printf '%s:%s\\n' "$u" "$p" | chpasswd
+"""
+        
+        if self._has("passwd"):
+            self._log_choice(f"set_user_password: {u}", "passwd")
+            return f"""set -eu
+u={u}
+p={p}
 
-    def get_users_in_group(self, groupname: str) -> str:
-        """Return a sh-compatible command that prints usernames in the specified group (newline-separated)."""
+if ! id -u "$u" >/dev/null 2>&1; then
+  echo "User $u does not exist" >&2
+  exit 1
+fi
+
+printf '%s\\n%s\\n' "$p" "$p" | passwd "$u" >/dev/null
+"""
+
+        self._log_choice(f"set_user_password: {u}", "no supported tool")
+        return f"""set -eu
+u={u}
+echo "No supported password tool found" >&2
+exit 1
+"""
+
+    def add_group(self, groupname: str) -> str:
+        """Create a new group."""
         g = self._sh_quote(groupname)
 
         # macOS
         if self._has("dscl"):
+            self._log_choice(f"add_group: {g}", "dscl")
+            return f"""set -eu
+g={g}
+
+if dscl . -read "/Groups/$g" >/dev/null 2>&1; then
+  exit 0
+fi
+
+max_gid="$(dscl . -list /Groups PrimaryGroupID 2>/dev/null | awk '{{print $2}}' | awk 'BEGIN{{m=500}} {{if($1>m)m=$1}} END{{print m}}')"
+new_gid="$((max_gid + 1))"
+dscl . -create "/Groups/$g"
+dscl . -create "/Groups/$g" PrimaryGroupID "$new_gid"
+"""
+
+        # BSD
+        if self._has("pw"):
+            self._log_choice(f"add_group: {g}", "pw")
+            return f"""set -eu
+g={g}
+
+if command -v getent >/dev/null 2>&1; then
+  getent group "$g" >/dev/null 2>&1 && exit 0
+else
+  grep -q "^$g:" /etc/group 2>/dev/null && exit 0
+fi
+
+pw groupadd -n "$g"
+"""
+
+        # Linux
+        if self._has("groupadd"):
+            self._log_choice(f"add_group: {g}", "groupadd")
+            return f"""set -eu
+g={g}
+
+if command -v getent >/dev/null 2>&1; then
+  getent group "$g" >/dev/null 2>&1 && exit 0
+else
+  grep -q "^$g:" /etc/group 2>/dev/null && exit 0
+fi
+
+groupadd "$g"
+"""
+        
+        if self._has("addgroup"):
+            self._log_choice(f"add_group: {g}", "addgroup")
+            return f"""set -eu
+g={g}
+
+if command -v getent >/dev/null 2>&1; then
+  getent group "$g" >/dev/null 2>&1 && exit 0
+else
+  grep -q "^$g:" /etc/group 2>/dev/null && exit 0
+fi
+
+addgroup "$g"
+"""
+
+        self._log_choice(f"add_group: {g}", "no supported tool")
+        return f"""set -eu
+g={g}
+echo "No supported group creation tool found" >&2
+exit 1
+"""
+
+    def add_group_to_sudoers(self, groupname: str) -> str:
+        """Configure a group to have full sudo access via sudoers.d."""
+        g = self._sh_quote(groupname)
+
+        # macOS - admin group is built-in, no need to configure
+        if self._has("dscl") or self._has("dseditgroup"):
+            if groupname == "admin":
+                self._log_choice(f"add_group_to_sudoers: {g}", "macos admin group (noop)")
+                return f"""set -eu
+# macOS admin group already has sudo by default
+:
+"""
+            self._log_choice(f"add_group_to_sudoers: {g}", "macos sudoers.d")
+            return f"""set -eu
+g={g}
+
+# For custom groups on macOS, add to sudoers.d
+for d in /etc/sudoers.d /private/etc/sudoers.d; do
+  if [ -d "$d" ]; then
+    f="$d/$g"
+    printf '%%%s ALL=(ALL) ALL\\n' "$g" > "$f"
+    chmod 0440 "$f"
+    if command -v visudo >/dev/null 2>&1; then
+      visudo -cf "$f" >/dev/null
+    fi
+    exit 0
+  fi
+done
+
+echo "Could not find sudoers.d directory" >&2
+exit 1
+"""
+
+        # BSD
+        if self._has("pw"):
+            self._log_choice(f"add_group_to_sudoers: {g}", "bsd sudoers.d")
+            return f"""set -eu
+g={g}
+
+for d in /etc/sudoers.d /usr/local/etc/sudoers.d; do
+  if [ -d "$d" ]; then
+    f="$d/$g"
+    printf '%%%s ALL=(ALL) ALL\\n' "$g" > "$f"
+    chmod 0440 "$f"
+    if command -v visudo >/dev/null 2>&1; then
+      visudo -cf "$f" >/dev/null
+    fi
+    exit 0
+  fi
+done
+
+echo "Could not find sudoers.d directory" >&2
+"""
+
+        # Linux
+        self._log_choice(f"add_group_to_sudoers: {g}", "linux sudoers.d")
+        return f"""set -eu
+g={g}
+
+if [ ! -d /etc/sudoers.d ]; then
+  echo "/etc/sudoers.d not found" >&2
+  exit 1
+fi
+
+f="/etc/sudoers.d/$g"
+printf '%%%s ALL=(ALL) ALL\\n' "$g" > "$f"
+chmod 0440 "$f"
+
+if command -v visudo >/dev/null 2>&1; then
+  visudo -cf "$f" >/dev/null
+fi
+"""
+
+    def add_user_to_group(self, username: str, groupname: str) -> str:
+        """Add a user to an existing group."""
+        u = self._sh_quote(username)
+        g = self._sh_quote(groupname)
+
+        # macOS
+        if self._has("dseditgroup"):
+            self._log_choice(f"add_user_to_group: {u} {g}", "dseditgroup")
+            return f"""set -eu
+u={u}
+g={g}
+
+if ! dscl . -read "/Users/$u" >/dev/null 2>&1; then
+  echo "User $u does not exist" >&2
+  exit 1
+fi
+
+if ! dscl . -read "/Groups/$g" >/dev/null 2>&1; then
+  echo "Group $g does not exist" >&2
+  exit 1
+fi
+
+dseditgroup -o edit -a "$u" -t user "$g"
+"""
+
+        # BSD
+        if self._has("pw"):
+            self._log_choice(f"add_user_to_group: {u}", "pw")
+            return f"""set -eu
+u={u}
+g={g}
+
+if ! id "$u" >/dev/null 2>&1; then
+  echo "User $u does not exist" >&2
+  exit 1
+fi
+
+if command -v getent >/dev/null 2>&1; then
+  if ! getent group "$g" >/dev/null 2>&1; then
+    echo "Group $g does not exist" >&2
+    exit 1
+  fi
+else
+  if ! grep -q "^$g:" /etc/group 2>/dev/null; then
+    echo "Group $g does not exist" >&2
+    exit 1
+  fi
+fi
+
+pw groupmod "$g" -m "$u"
+"""
+
+        # Linux - prefer usermod, then gpasswd, then adduser
+        if self._has("usermod"):
+            self._log_choice(f"add_user_to_group: {u}", "usermod")
+            return f"""set -eu
+u={u}
+g={g}
+
+if ! id -u "$u" >/dev/null 2>&1; then
+  echo "User $u does not exist" >&2
+  exit 1
+fi
+
+if command -v getent >/dev/null 2>&1; then
+  if ! getent group "$g" >/dev/null 2>&1; then
+    echo "Group $g does not exist" >&2
+    exit 1
+  fi
+else
+  if ! grep -q "^$g:" /etc/group 2>/dev/null; then
+    echo "Group $g does not exist" >&2
+    exit 1
+  fi
+fi
+
+usermod -aG "$g" "$u"
+"""
+
+        if self._has("gpasswd"):
+            self._log_choice(f"add_user_to_group: {u}", "gpasswd")
+            return f"""set -eu
+u={u}
+g={g}
+
+if ! id -u "$u" >/dev/null 2>&1; then
+  echo "User $u does not exist" >&2
+  exit 1
+fi
+
+if command -v getent >/dev/null 2>&1; then
+  if ! getent group "$g" >/dev/null 2>&1; then
+    echo "Group $g does not exist" >&2
+    exit 1
+  fi
+else
+  if ! grep -q "^$g:" /etc/group 2>/dev/null; then
+    echo "Group $g does not exist" >&2
+    exit 1
+  fi
+fi
+
+gpasswd -a "$u" "$g"
+"""
+
+        if self._has("adduser"):
+            self._log_choice(f"add_user_to_group: {u}", "adduser")
+            return f"""set -eu
+u={u}
+g={g}
+
+if ! id -u "$u" >/dev/null 2>&1; then
+  echo "User $u does not exist" >&2
+  exit 1
+fi
+
+if command -v getent >/dev/null 2>&1; then
+  if ! getent group "$g" >/dev/null 2>&1; then
+    echo "Group $g does not exist" >&2
+    exit 1
+  fi
+else
+  if ! grep -q "^$g:" /etc/group 2>/dev/null; then
+    echo "Group $g does not exist" >&2
+    exit 1
+  fi
+fi
+
+adduser "$u" "$g"
+"""
+
+        self._log_choice(f"add_user_to_group: {u}", "no supported tool")
+        return f"""set -eu
+u={u}
+g={g}
+echo "No supported tool to add user to group" >&2
+exit 1
+"""
+
+    def remove_user_from_group(self, username: str, groupname: str) -> str:
+        """Remove a user from a specific group."""
+        u = self._sh_quote(username)
+        g = self._sh_quote(groupname)
+
+        # macOS
+        if self._has("dseditgroup"):
+            self._log_choice(f"remove_user_from_group: {u} {g}", "dseditgroup")
+            return f"""set -eu
+u={u}
+g={g}
+
+if ! dscl . -read "/Users/$u" >/dev/null 2>&1; then
+  echo "User $u does not exist" >&2
+  exit 1
+fi
+
+if ! dscl . -read "/Groups/$g" >/dev/null 2>&1; then
+  echo "Group $g does not exist" >&2
+  exit 1
+fi
+
+dseditgroup -o edit -d "$u" -t user "$g" || true
+"""
+
+        # BSD
+        if self._has("pw"):
+            self._log_choice(f"remove_user_from_group: {u} {g}", "pw")
+            return f"""set -eu
+u={u}
+g={g}
+
+if ! id "$u" >/dev/null 2>&1; then
+  echo "User $u does not exist" >&2
+  exit 1
+fi
+
+if command -v getent >/dev/null 2>&1; then
+  if ! getent group "$g" >/dev/null 2>&1; then
+    echo "Group $g does not exist" >&2
+    exit 1
+  fi
+else
+  if ! grep -q "^$g:" /etc/group 2>/dev/null; then
+    echo "Group $g does not exist" >&2
+    exit 1
+  fi
+fi
+
+pw groupmod "$g" -d "$u" 2>/dev/null || true
+"""
+
+        # Linux - prefer gpasswd, then deluser
+        if self._has("gpasswd"):
+            self._log_choice(f"remove_user_from_group: {u} {g}", "gpasswd")
+            return f"""set -eu
+u={u}
+g={g}
+
+if ! id -u "$u" >/dev/null 2>&1; then
+  echo "User $u does not exist" >&2
+fi
+
+if command -v getent >/dev/null 2>&1; then
+  if ! getent group "$g" >/dev/null 2>&1; then
+    echo "Group $g does not exist" >&2
+  fi
+else
+  if ! grep -q "^$g:" /etc/group 2>/dev/null; then
+    echo "Group $g does not exist" >&2
+  fi
+fi
+
+gpasswd -d "$u" "$g" >/dev/null 2>&1 || true
+"""
+
+        if self._has("deluser"):
+            self._log_choice(f"remove_user_from_group: {u} {g}", "deluser")
+            return f"""set -eu
+u={u}
+g={g}
+
+if ! id -u "$u" >/dev/null 2>&1; then
+  echo "User $u does not exist" >&2
+  exit 1
+fi
+
+if command -v getent >/dev/null 2>&1; then
+  if ! getent group "$g" >/dev/null 2>&1; then
+    echo "Group $g does not exist" >&2
+  fi
+else
+  if ! grep -q "^$g:" /etc/group 2>/dev/null; then
+    echo "Group $g does not exist" >&2
+  fi
+fi
+
+deluser "$u" "$g" >/dev/null 2>&1 || true
+"""
+
+        self._log_choice(f"remove_user_from_group: {u} {g}", "no supported tool")
+        return f"""set -eu
+u={u}
+g={g}
+echo "No supported tool to remove user from group" >&2
+exit 1
+"""
+
+    def kill_user_processes(self, username: str) -> str:
+        """Kill all processes owned by a user (except PID 1, and only if UID != 0)."""
+        u = self._sh_quote(username)
+        self._log_choice(f"kill_user_processes: {u}", "generate script")
+
+        # Common logic for all platforms
+        return f"""set -eu
+u={u}
+
+# Check if user exists
+if ! id "$u" >/dev/null 2>&1; then
+  echo "User $u does not exist" >&2
+fi
+
+# Get UID and ensure it's not 0 (root)
+uid="$(id -u "$u" 2>/dev/null || echo "")"
+if [ -z "$uid" ] || [ "$uid" -eq 0 ]; then
+  echo "Cannot kill processes for root user (UID 0)" >&2
+  exit 1
+fi
+
+# Get all PIDs for this user, excluding PID 1
+if command -v pgrep >/dev/null 2>&1; then
+  pids="$(pgrep -u "$u" 2>/dev/null | grep -v '^1$' || true)"
+else
+  pids="$(ps -u "$u" -o pid= 2>/dev/null | grep -v '^1$' | tr -d ' ' || true)"
+fi
+
+for pid in $pids; do
+  echo $pid
+  kill -9 "$pid" 2>/dev/null || true
+done
+    """
+
+    def remove_user(self, username: str) -> str:
+        """Remove a user account and home directory (kills processes first if UID != 0)."""
+        u = self._sh_quote(username)
+
+        # macOS
+        if self._has("dscl"):
+            self._log_choice(f"remove_user: {u}", "dscl")
+            return f"""set -eu
+u={u}
+
+if ! dscl . -read "/Users/$u" >/dev/null 2>&1; then
+  exit 0
+fi
+
+homedir="$(dscl . -read "/Users/$u" NFSHomeDirectory 2>/dev/null | awk '{{print $2}}' || true)"
+dscl . -delete "/Users/$u" || true
+if [ -n "${{homedir:-}}" ] && [ -d "$homedir" ]; then 
+  rm -rf "$homedir"
+fi
+    """
+
+        # BSD
+        if self._has("pw"):
+            self._log_choice(f"remove_user: {u}", "pw")
+            return f"""set -eu
+u={u}
+
+if ! id "$u" >/dev/null 2>&1; then
+  echo "user is already missing!!"
+  exit 0
+fi
+
+pw userdel -n "$u" -r || pw userdel -n "$u" || true
+    """
+
+        # Linux
+        if self._has("userdel"):
+            self._log_choice(f"remove_user: {u}", "userdel")
+            return f"""set -eu
+u={u}
+
+if ! id -u "$u" >/dev/null 2>&1; then
+  echo "user is already missing!!"
+  exit 0
+fi
+
+userdel -r "$u" 2>/dev/null || userdel "$u"
+    """
+
+        if self._has("deluser"):
+            self._log_choice(f"remove_user: {u}", "deluser")
+            return f"""set -eu
+u={u}
+
+if ! id -u "$u" >/dev/null 2>&1; then
+  echo "user is already missing!!"
+  exit 0
+fi
+
+deluser --remove-home "$u" 2>/dev/null || deluser "$u"
+    """
+
+        self._log_choice(f"remove_user: {u}", "no supported tool")
+        return f"""set -eu
+u={u}
+echo "No supported user deletion tool found" >&2
+exit 1
+    """
+
+    def lock_user(self, username: str) -> str:
+        """Lock a user account to prevent login."""
+        u = self._sh_quote(username)
+
+        # macOS
+        if self._has("dscl"):
+            self._log_choice(f"lock_user: {u}", "dscl")
+            return f"""set -eu
+u={u}
+
+if ! dscl . -read "/Users/$u" >/dev/null 2>&1; then
+  exit 0
+fi
+
+dscl . -passwd "/Users/$u" '*' >/dev/null 2>&1 || true
+"""
+
+        # BSD
+        if self._has("pw"):
+            self._log_choice(f"lock_user: {u}", "pw")
+            return f"""set -eu
+u={u}
+
+if ! id "$u" >/dev/null 2>&1; then
+  exit 0
+fi
+
+pw lock "$u" >/dev/null 2>&1 || true
+"""
+
+        # Linux
+        if self._has("usermod"):
+            self._log_choice(f"lock_user: {u}", "usermod")
+            return f"""set -eu
+u={u}
+
+if ! id -u "$u" >/dev/null 2>&1; then
+  exit 0
+fi
+
+usermod -L "$u" >/dev/null 2>&1 || true
+"""
+
+        if self._has("passwd"):
+            self._log_choice(f"lock_user: {u}", "passwd")
+            return f"""set -eu
+u={u}
+
+if ! id -u "$u" >/dev/null 2>&1; then
+  exit 0
+fi
+
+passwd -l "$u" >/dev/null 2>&1 || true
+"""
+
+        self._log_choice(f"lock_user: {u}", "no supported tool")
+        return f"""set -eu
+u={u}
+echo "No supported account lock mechanism found" >&2
+exit 1
+"""
+
+    def get_users_in_group(self, groupname: str) -> str:
+        """Query: print usernames in the specified group (newline-separated)."""
+        g = self._sh_quote(groupname)
+
+        # macOS
+        if self._has("dscl"):
+            self._log_choice(f"get_users_in_group: {g}", "dscl")
             return f"""set -eu
 g={g}
 dscl . -read "/Groups/$g" GroupMembership 2>/dev/null | sed 's/^GroupMembership: *//' | tr ' ' '\\n' | sed '/^$/d'
 """
 
-        # Prefer getent on Unix-like
+        # Prefer getent
         if self._has("getent"):
-            # Note: prints supplemental members listed in group entry.
+            self._log_choice(f"get_users_in_group: {g}", "getent")
             return f"""set -eu
 g={g}
 getent group "$g" | awk -F: '{{print $4}}' | tr ',' '\\n' | sed '/^$/d'
 """
 
-        # BSD pw groupshow can output group members similarly (if present)
+        # BSD
         if self._has("pw"):
+            self._log_choice(f"get_users_in_group: {g}", "pw")
             return f"""set -eu
 g={g}
 pw groupshow "$g" 2>/dev/null | awk -F: '{{print $4}}' | tr ',' '\\n' | sed '/^$/d'
 """
 
-        # Fallback to /etc/group
+        # Fallback
+        self._log_choice(f"get_users_in_group: {g}", "grep /etc/group")
         return f"""set -eu
 g={g}
 grep -E "^$g:" /etc/group 2>/dev/null | awk -F: '{{print $4}}' | tr ',' '\\n' | sed '/^$/d'
 """
 
+    # ============================================================================
+    # CONVENIENCE METHODS (compose atomic operations)
+    # ============================================================================
+
+    def add_sudo_user(self, username: str, password: str) -> list[str]:
+        """Convenience: Create user, set password, and grant sudo access."""
+        output_list = []
+        # Select appropriate sudo group
+        if "sudo" in self.sudoers_groups:
+            grp = "sudo"
+        elif "wheel" in self.sudoers_groups:
+            grp = "wheel"
+        elif "admin" in self.sudoers_groups:
+            grp = "admin"
+        elif self.sudoers_groups:
+            grp = self.sudoers_groups[0]
+        else:
+            grp = 'blue-sudoer'
+            add_grp = self.add_group(groupname=grp)
+            make_sudoer = self.add_group_to_sudoers(groupname=grp)
+            output_list.append(add_grp)
+            output_list.append(make_sudoer)
+
+        self._log_choice(f"add_sudo_user", f"selected group={grp}")
+        post_script = f"""set -eu
+
+# Add user
+{self.add_user(username)}
+
+# Set password
+{self.set_user_password(username, password)}
+
+# Add to sudo group
+{self.add_user_to_group(username, grp)}
+"""
+        output_list.append(post_script)
+        return output_list
+    
+    def remove_user_from_sudoers(self, username: str) -> str:
+        """Convenience: Remove user from all sudo-related groups and sudoers.d entries."""
+        u = self._sh_quote(username)
+        self._log_choice(f"remove_user_from_sudoers: {u}", f"groups={self.sudoers_groups}")
+        
+        lines = [
+            "set -eu",
+            f"u={u}",
+            "",
+            "# Remove any sudoers.d drop-in files"
+        ]
+        
+        # macOS and BSD may have multiple paths
+        if self._has("dscl") or self._has("pw"):
+            lines.append('for d in /etc/sudoers.d /usr/local/etc/sudoers.d /private/etc/sudoers.d; do')
+            lines.append('  [ -d "$d" ] && rm -f "$d/$u" 2>/dev/null || true')
+            lines.append('done')
+        else:
+            lines.append('rm -f "/etc/sudoers.d/$u" 2>/dev/null || true')
+        
+        lines.append("")
+        lines.append("# Remove from common sudo groups")
+        
+        # Remove from all known sudo groups
+        for grp in self.sudoers_groups:
+            lines.append(f"# Remove from {grp}")
+            lines.append(self.remove_user_from_group(username, grp))
+        
+        return "\n".join(lines)

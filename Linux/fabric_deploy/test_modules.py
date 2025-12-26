@@ -390,8 +390,8 @@ class ModuleTester:
                 success_count += 1
                 
             # Truncate long outputs
-            output = result.output[:50] + "..." if len(result.output) > 50 else result.output
-            error = result.error[:50] + "..." if result.error and len(result.error) > 50 else (result.error or "")
+            output = result.output
+            error = result.error or ""
             
             table_data.append([
                 status,

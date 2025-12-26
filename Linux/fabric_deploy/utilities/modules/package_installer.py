@@ -40,6 +40,7 @@ PACKAGE_MANAGER_INSTALL_CMD = {
     "flatpak":  "flatpak install -y --noninteractive flathub {}",
 
     # Slackware
+    "sbopkg":   "sbopkg -B -e -i {}",
     "slackpkg": "slackpkg -batch=on -default_answer=y install {}",
 }
 
@@ -61,7 +62,7 @@ PACKAGE_MANAGER_UPDATE_CMD = {
 
     # Arch
     # updating keys + sync db + upgrade system
-    "pacman":   "sudo pacman-key --init; sudo pacman-key --populate archlinux; sudo pacman-key --refresh-keys; sudo pacman -Sy --needed archlinux-keyring --noconfirm; pacman -Syu --noconfirm",
+    "pacman":   "sudo pacman-key --init; sudo pacman-key --populate archlinux; sudo pacman-key --refresh-keys; sudo pacman -Sy --needed archlinux-keyring --noconfirm; pacman -Syu --ignore linux-firmware-nvidia --noconfirm",
 
     # Gentoo
     # sync repo + update world (incl deps) + rebuild if needed
@@ -90,7 +91,8 @@ PACKAGE_MANAGER_UPDATE_CMD = {
 
     # Slackware
     # update package lists + upgrade all
-    "slackpkg": "slackpkg -batch=on -default_answer=y update && slackpkg -batch=on -default_answer=y upgrade-all",
+    "sbopkg":   "sbopkg -r",
+    "slackpkg": "slackpkg -batch=on -default_answer=y update gpg && slackpkg -batch=on -default_answer=y update && slackpkg -batch=on -default_answer=y upgrade-all",
 }
 
 PACKAGE_MANAGER_UNINSTALL_CMD = {
@@ -126,6 +128,7 @@ PACKAGE_MANAGER_UNINSTALL_CMD = {
     "flatpak":  "flatpak uninstall -y --noninteractive {}",
 
     # Slackware
+    "sbopkg":   "removepkg {}",
     "slackpkg": "slackpkg -batch=on -default_answer=y remove {}",
 }
 
@@ -148,7 +151,7 @@ PACKAGE_MANAGER_REMOVE_UNUSED = {
     "emerge":   "PAGER=cat emerge --depclean --ask=n",
 
     # Alpine
-    "apk":      "apk autoremove",
+    "apk":      "echo 'not implimented'",
 
     # FreeBSD
     "pkg":      "pkg autoremove -y",
@@ -165,6 +168,7 @@ PACKAGE_MANAGER_REMOVE_UNUSED = {
 
     # Slackware
     # Removes packages not in the official Slackware set
+    "sbopkg":   "sbopkg -c",
     "slackpkg": "slackpkg -batch=on -default_answer=y clean-system",
 }
 
@@ -203,7 +207,8 @@ PACKAGE_MANAGER_VALIDATE_INSTALLED = {
 
     # Slackware
     # Best-effort: re-download + reinstall (signature-checked) official packages
-    "slackpkg": r"""slackpkg -batch=on -default_answer=y reinstall \*""",
+    "sbopkg":   "echo 'package validation not available'",
+    "slackpkg": r"""slackpkg -batch=on -default_answer=y reinstall '*'""",
 }
 
 class PackageInstallerModule(HardeningModule):
@@ -285,6 +290,8 @@ class PackageInstallerModule(HardeningModule):
             the generic name (you may want to validate availability at runtime).
         - pkg here is aligned to FreeBSD ports/pkgng naming where it differs.
         - brew is aligned to Homebrew; some formulae are Linux-only (Homebrew shows bottles).
+        - sbopkg is for SlackBuilds.org packages. Many basic tools are in official Slackware repos,
+          not SlackBuilds.org, so they're kept as identity mappings (sbopkg won't find them).
         """
         all_generic = [
             # security
@@ -427,23 +434,31 @@ class PackageInstallerModule(HardeningModule):
                 "auditd": "audit",     # often via SlackBuilds; not always in the base set
                 "strings": "binutils",
             }),
+
+            # Slackware (sbopkg/SlackBuilds.org)
+            # Note: Basic system tools (tcpdump, curl, vim, etc.) are in official Slackware repos,
+            # not SlackBuilds.org, so they remain as identity mappings (sbopkg won't find them).
+            # Only specialized security/monitoring tools are on SlackBuilds.org.
+            "sbopkg": identity_map({
+                # These are available on SlackBuilds.org
+                "fail2ban": "fail2ban",
+                "rkhunter": "rkhunter",
+                "aide": "aide",
+                "rsyslog": "rsyslog",
+                "auditd": "audit",
+                # Basic tools below are in official repos, not SBo
+                "ss": "iproute2",
+                "procps": "procps-ng",
+                "strings": "binutils",
+            }),
         }
 
         return package_mappings.get(package_manager, {})
 
-    def _get_update_command(self, pm_cmd: str, pm_name: str) -> str:
-        """Get the appropriate update command for the package manager"""
-        update_commands = {
-            'apt': 'apt-get update',
-            'dnf': 'dnf check-update || true',  # dnf returns 100 when updates available
-            'yum': 'yum check-update || true',   # yum returns 100 when updates available
-            'zypper': 'zypper refresh',
-            'pacman': 'pacman -Sy',
-            'apk': 'apk update'
-        }
-        
-        return update_commands.get(pm_name, f'{pm_cmd} update')
-    
     def is_applicable(self) -> bool:
         """This module is applicable if we have any package managers available"""
         return len(self.server_info.package_managers) > 0
+    
+# DEBUGGING HELP
+# if the system update failes on pacman due to a manually installed package: linux-firmware-nvidia: /usr/lib/firmware/nvidia/ad104 exists in filesystem
+# skip the particular package and upgrade again: sudo pacman -Syu --ignore linux-firmware-nvidia

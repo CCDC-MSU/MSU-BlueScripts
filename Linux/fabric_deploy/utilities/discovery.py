@@ -10,8 +10,9 @@ from typing import Dict, List, Optional, Callable
 from dataclasses import dataclass
 from enum import Enum
 from invoke.exceptions import UnexpectedExit
-from .models import ServerCredentials, ServerInfo, OSInfo, UserInfo, NetworkInfo
+from .models import ServerCredentials, ServerInfo, OSInfo, UserInfo, NetworkInfo, SudoersInfo
 from .actions import UserManager
+from .utils import analyze_sudoers
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ class SystemDiscovery:
         self.credentials = credentials
         self.server_info = ServerInfo(hostname=credentials.host, credentials=credentials)
         self._os_family = OSFamily.UNKNOWN.value
-        self.user_manager = UserManager(available_commands = self.server_info.available_commands)
+        self.user_manager = UserManager(available_commands = self.server_info.available_commands, groups=self.server_info.groups, sudoers_info = self.server_info.sudoers_info)
         
     def discover_system(self) -> ServerInfo:
         """Main discovery method - runs all discovery tasks"""
@@ -59,6 +60,7 @@ class SystemDiscovery:
             ("operating system", self._discover_os_info),
             ("users", self._discover_users),
             ("groups", self._discover_groups),
+            ("sudoers", self._discover_sudoers_group),
             ("services", self._discover_services),
             ("network configuration", self._discover_network),
             ("security tools", self._discover_security_tools),
@@ -115,6 +117,19 @@ class SystemDiscovery:
             if task_name == "groups":
                 groups = getattr(self.server_info, "groups", []) or []
                 return f"count={len(groups)}, sample={groups[:10]}"
+
+            if task_name == "sudoers":
+                sudoers_info = getattr(self.server_info, "sudoers_info", None)
+                dump_set = bool(getattr(self.server_info, "sudoers_dump", None))
+                if sudoers_info:
+                    return (
+                        f"users={len(sudoers_info.sudoer_users)}, "
+                        f"groups={len(sudoers_info.sudoer_groups)}, "
+                        f"nopasswd_lines={len(sudoers_info.nopasswd_lines)}, "
+                        f"group_all={len(sudoers_info.sudoer_group_all)}, "
+                        f"dump_set={dump_set}"
+                    )
+                return f"sudoers_info=None, dump_set={dump_set}"
 
             if task_name == "services":
                 services = getattr(self.server_info, "services", []) or []
@@ -332,6 +347,11 @@ class SystemDiscovery:
                 elif 'bsd' in uname:
                     os_info.distro = "BSD"
                     self._os_family = OSFamily.FREEBSD.value
+
+    def _test_valid_user(self, username) -> bool:
+        """ test if the user has a valid shell by trying to su to it """
+        result = self._run_command(f'su - {username} -c "true" 2>/dev/null', warn=True, timeout=2)
+        return result.success
     
     def _discover_users(self):
         """Discover system users"""
@@ -350,7 +370,8 @@ class SystemDiscovery:
                             uid=int(parts[2]),
                             gid=int(parts[3]),
                             home=parts[5],
-                            shell=parts[6] if len(parts) > 6 else '/bin/sh'
+                            shell=parts[6] if len(parts) > 6 else '/bin/sh',
+                            valid_shell = self._test_valid_user(parts[0])
                         )
                         users.append(user)
                     except ValueError:
@@ -522,7 +543,7 @@ class SystemDiscovery:
             'groupadd', 'groupmod', 'groupdel', 'gpasswd',
             'pwck', 'grpck', 'vipw', 'vigr',
             'adduser', 'deluser', 'addgroup', 'delgroup',
-            'pw','dscl','dseditgroup', 'busybox'
+            'pw','dscl','dseditgroup', 'busybox', 'pgrep', 'pkill', 
         ]
         available = []
         seen = set()
@@ -575,6 +596,7 @@ class SystemDiscovery:
             'brew':     'brew --version',
             'snap':     'snap --version',
             'flatpak':  'flatpak --version',
+            'sbopkg': 'sbopkg -v',
             'slackpkg': 'slackpkg version'
         }
         
@@ -584,6 +606,28 @@ class SystemDiscovery:
                 package_managers.append(pm_name)
         
         self.server_info.package_managers = package_managers
+
+    def _discover_sudoers_group(self):
+        """Discover sudoers entries and sudo access group/user membership."""
+        sudoers_dump = self._try_command_chain([
+            'cvtsudoers -f sudoers -e /etc/sudoers 2>/dev/null',
+            'cvtsudoers -f sudoers -e /usr/local/etc/sudoers 2>/dev/null',
+            'cat /etc/sudoers 2>/dev/null',
+            'cat /usr/local/etc/sudoers 2>/dev/null',
+        ])
+
+        self.server_info.sudoers_dump = sudoers_dump or ''
+        outputs_dict = analyze_sudoers(
+            all_users=self.server_info.usernames,
+            all_groups=self.server_info.groups,
+            sudoers_dump=self.server_info.sudoers_dump
+        )
+        self.server_info.sudoers_info = SudoersInfo(
+            nopasswd_lines=outputs_dict.get("nopasswd_lines", []),
+            sudoer_users=outputs_dict.get("sudoer_users", []),
+            sudoer_groups=outputs_dict.get("sudoer_groups", []),
+            sudoer_group_all=outputs_dict.get("sudoer_group_all", []),
+        )
 
     @property 
     def os_family(self) -> str:
