@@ -23,6 +23,7 @@ from .modules import (
     ServiceHardeningModule,
     FilePermissionsModule,
     BashScriptHardeningModule,
+    UserHardeningModule,
 )
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,7 @@ class HardeningOrchestrator:
             FirewallHardeningModule(self.conn, self.server_info, self.os_family),
             ServiceHardeningModule(self.conn, self.server_info, self.os_family),
             FilePermissionsModule(self.conn, self.server_info, self.os_family),
+            UserHardeningModule(self.conn, self.server_info, self.os_family),
             BashScriptHardeningModule(self.conn, self.server_info, self.os_family, 
                                     script_paths=self.script_paths),
         ]

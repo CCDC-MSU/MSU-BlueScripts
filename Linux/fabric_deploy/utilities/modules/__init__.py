@@ -13,6 +13,7 @@ from .firewall_hardening import FirewallHardeningModule
 from .service_hardening import ServiceHardeningModule
 from .file_permissions import FilePermissionsModule
 from .bash_scripts import BashScriptHardeningModule
+from .user_hardening import UserHardeningModule
 
 __all__ = [
     'HardeningModule',
@@ -31,4 +32,5 @@ __all__ = [
     'ServiceHardeningModule',
     'FilePermissionsModule',
     'BashScriptHardeningModule',
+    'UserHardeningModule',
 ]

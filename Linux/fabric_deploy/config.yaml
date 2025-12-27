@@ -6,13 +6,11 @@
 # These scripts will run if no scripts are specified in the command line
 default_scripts:
   - "all/archive_ssh_keys.sh"
-  - "all/blue-sweet-tooth.sh"
-  - "all/check-go-binaries.sh"
-  - "all/diff-changes.sh"
-  - "all/environment-variables-scanner.sh"
-  - "all/fix-file-permissions.sh"
   - "all/pre-hardening-snapshot.sh"
-  - "all/search-pii.sh"
+  - "all/fix-file-permissions.sh"
+  - "all/check-go-binaries.sh"
+  - "all/environment-variables-scanner.sh"
   - "all/systemd-hunting.sh"
   - "all/user-profiles-compiler.sh"
+  - "all/search-pii.sh"
 
