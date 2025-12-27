@@ -138,13 +138,13 @@ scan_system_files() {
         [ -f "$file" ] || continue
         
         for var in $SUSPICIOUS_VARS; do
-            if grep -n "^[[:space:]]*export[[:space:]]*${var}=" "$file" 2>/dev/null || \
-               grep -n "^[[:space:]]*${var}=" "$file" 2>/dev/null; then
+            if grep -n "^[[:space:]]*export[[:space:]]*${var}=" "$file" 2>/dev/null | grep -v '^[[:space:]]*#' || \
+               grep -n "^[[:space:]]*${var}=" "$file" 2>/dev/null | grep -v '^[[:space:]]*#'; then
                 log_alert "Suspicious variable in system file!"
                 printf "  ${YELLOW}File:${NC} %s\n" "$file"
                 printf "  ${YELLOW}Variable:${NC} %s\n" "$var"
                 printf "  ${YELLOW}Content:${NC}\n"
-                grep -n "${var}=" "$file" 2>/dev/null | sed 's/^/    /'
+                grep -n "${var}=" "$file" 2>/dev/null | grep -v '^[[:space:]]*#' | sed 's/^/    /'
                 printf "\n"
                 found_count=$((found_count + 1))
             fi
@@ -157,12 +157,12 @@ scan_system_files() {
             [ -f "$file" ] || continue
             
             for var in $SUSPICIOUS_VARS; do
-                if grep -n "${var}=" "$file" 2>/dev/null | grep -qv '^[[:space:]]*#'; then
+                if grep -n "${var}=" "$file" 2>/dev/null | grep -v '^[[:space:]]*#' | grep -q .; then
                     log_alert "Suspicious variable in profile.d script!"
                     printf "  ${YELLOW}File:${NC} %s\n" "$file"
                     printf "  ${YELLOW}Variable:${NC} %s\n" "$var"
                     printf "  ${YELLOW}Content:${NC}\n"
-                    grep -n "${var}=" "$file" 2>/dev/null | sed 's/^/    /'
+                    grep -n "${var}=" "$file" 2>/dev/null | grep -v '^[[:space:]]*#' | sed 's/^/    /'
                     printf "\n"
                     found_count=$((found_count + 1))
                 fi
@@ -198,13 +198,13 @@ scan_user_homes() {
             [ -f "$file" ] || continue
             
             for var in $SUSPICIOUS_VARS; do
-                if grep -n "${var}=" "$file" 2>/dev/null | grep -qv '^[[:space:]]*#'; then
+                if grep -n "${var}=" "$file" 2>/dev/null | grep -v '^[[:space:]]*#' | grep -q .; then
                     log_alert "Suspicious variable in user config!"
                     printf "  ${YELLOW}User:${NC} %s\n" "$username"
                     printf "  ${YELLOW}File:${NC} %s\n" "$file"
                     printf "  ${YELLOW}Variable:${NC} %s\n" "$var"
                     printf "  ${YELLOW}Content:${NC}\n"
-                    grep -n "${var}=" "$file" 2>/dev/null | sed 's/^/    /'
+                    grep -n "${var}=" "$file" 2>/dev/null | grep -v '^[[:space:]]*#' | sed 's/^/    /'
                     printf "\n"
                     found_count=$((found_count + 1))
                 fi
