@@ -62,7 +62,7 @@ PACKAGE_MANAGER_UPDATE_CMD = {
 
     # Arch
     # updating keys + sync db + upgrade system
-    "pacman":   "sudo pacman-key --init; sudo pacman-key --populate archlinux; sudo pacman-key --refresh-keys; sudo pacman -Sy --needed archlinux-keyring --noconfirm; pacman -Syu --ignore linux-firmware-nvidia --noconfirm",
+    "pacman":   "sudo pacman-key --init; sudo pacman-key --populate archlinux; sudo pacman -Sy --needed archlinux-keyring --noconfirm; pacman -Syu --ignore linux-firmware-nvidia --noconfirm",
 
     # Gentoo
     # sync repo + update world (incl deps) + rebuild if needed
@@ -148,7 +148,7 @@ PACKAGE_MANAGER_REMOVE_UNUSED = {
     "pacman":   r"""orphans="$(pacman -Qtdq 2>/dev/null || true)"; [ -n "$orphans" ] && pacman -Rns --noconfirm $orphans || true""",
 
     # Gentoo
-    "emerge":   "PAGER=cat emerge --depclean --ask=n",
+    "emerge":   "true",
 
     # Alpine
     "apk":      "echo 'not implimented'",
@@ -187,7 +187,7 @@ PACKAGE_MANAGER_VALIDATE_INSTALLED = {
     "pacman":   "pacman -Qkk",
 
     # Gentoo
-    "emerge":   "qcheck",
+    "emerge":   "PAGER=cat qcheck",
 
     # Alpine
     "apk":      "apk verify -a",
@@ -339,13 +339,14 @@ class PackageInstallerModule(HardeningModule):
                 "procps": "procps-ng",
                 "vim": "vim-enhanced",
                 "strings": "binutils",
+                "firewall": "firewalld"
             }),
 
             # openSUSE/SLES
             "zypper": identity_map({
                 "ss": "iproute2",
                 "auditd": "audit",
-                "strings": "binutils",
+                "strings": "binutils"
             }),
 
             # Arch/Manjaro
@@ -392,6 +393,7 @@ class PackageInstallerModule(HardeningModule):
                 "ss": "iproute2-ss",
                 "auditd": "audit",
                 "strings": "binutils",
+                "firewall": "nftables"
             }),
 
             # FreeBSD (pkgng) — best-effort equivalents

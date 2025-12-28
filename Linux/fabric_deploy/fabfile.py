@@ -85,7 +85,9 @@ def _configure_parallel_logging():
 
 
 def _host_label(server_creds):
-    label = server_creds.host.replace(":", "_").replace("/", "_").replace(" ", "_")
+    # Use friendly name if available, otherwise use host IP
+    base = server_creds.friendly_name if server_creds.friendly_name else server_creds.host
+    label = base.replace(":", "_").replace("/", "_").replace(" ", "_")
     if getattr(server_creds, 'port', 22) != 22:
         label = f"{label}_{server_creds.port}"
     return label
@@ -667,9 +669,9 @@ def run_script(c, file, hosts_file='hosts.txt', sudo=True, timeout=300, output_d
     remote_dir = "/tmp/ccdc_scripts"
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     def _run_on_host(server_creds):
-        host_label = server_creds.host.replace(":", "_").replace("/", "_")
+        host_label = _host_label(server_creds)
         output_file = script_output_dir / f"{host_label}_{timestamp}.log"
-        logger.info(f"Running {script_path.name} on {server_creds.host}")
+        logger.info(f"Running {script_path.name} on {server_creds.display_name}")
 
         try:
             # Set up connection
@@ -724,7 +726,7 @@ def run_script(c, file, hosts_file='hosts.txt', sudo=True, timeout=300, output_d
                 create_result = _run_remote(conn, f"mkdir -p {remote_dir} && chmod 755 {remote_dir}")
                 steps.append(("create staging dir", create_result))
                 if not create_result.ok:
-                    logger.error(f"{server_creds.host}: failed to create staging dir")
+                    logger.error(f"{server_creds.display_name}: failed to create staging dir")
                     _write_runbash_output(output_file, server_creds, script_path, steps, None)
                     return {
                         'host': server_creds.host,
@@ -740,7 +742,7 @@ def run_script(c, file, hosts_file='hosts.txt', sudo=True, timeout=300, output_d
                 upload_result = _run_remote(conn, upload_cmd)
                 steps.append(("upload script", upload_result))
                 if not upload_result.ok:
-                    logger.error(f"{server_creds.host}: failed to upload script")
+                    logger.error(f"{server_creds.display_name}: failed to upload script")
                     _write_runbash_output(output_file, server_creds, script_path, steps, None)
                     return {
                         'host': server_creds.host,
@@ -749,32 +751,53 @@ def run_script(c, file, hosts_file='hosts.txt', sudo=True, timeout=300, output_d
                         'output_file': str(output_file)
                     }
 
-                # Execute script
+                # Execute script with nohup to persist even if SSH connection dies
+                # Running in foreground (no &) so we wait for completion and get exit code
+                # If SSH dies, nohup ensures the script continues running
                 exec_cmd = f"{shell} {remote_script}"
                 if timeout and int(timeout) > 0:
                     exec_cmd = f"timeout {int(timeout)} {exec_cmd}"
-                exec_result = _run_remote(conn, exec_cmd, use_sudo=sudo)
-                steps.append(("execute script", exec_result))
+                
+                # Wrap with nohup - output goes to both remote log and our capture
+                remote_log = f"{remote_dir}/{script_path.name}.log"
+                # Use tee to write to both log file and stdout so we can capture it
+                nohup_cmd = f"nohup {exec_cmd} 2>&1 | tee {remote_log}"
+                
+                logger.info(f"{server_creds.display_name}: executing script with nohup (remote log: {remote_log})")
+                
+                # Execute with nohup - this will wait for completion unless SSH dies
+                exec_result = _run_remote(conn, nohup_cmd, use_sudo=sudo)
+                steps.append(("execute script (nohup)", exec_result))
+                
+                # If we get here, either the script completed or SSH died
+                if exec_result.ok:
+                    logger.info(f"{server_creds.display_name}: script completed successfully (exit code: {exec_result.exited})")
+                else:
+                    logger.warning(f"{server_creds.display_name}: script exited with code {exec_result.exited}, check remote log: {remote_log}")
 
-                # Cleanup
+                # Cleanup the script file (keep the log for reference)
                 cleanup_result = _run_remote(conn, f"rm -f {remote_script}")
                 steps.append(("cleanup script", cleanup_result))
 
                 _write_runbash_output(output_file, server_creds, script_path, steps, exec_result)
 
+                # Determine status based on exit code
                 if not exec_result.ok:
-                    logger.error(f"{server_creds.host}: script failed with exit {exec_result.exited}")
+                    logger.error(f"{server_creds.display_name}: script failed with exit code {exec_result.exited}")
+                    status = "failed"
+                else:
+                    status = "ok"
 
-                status = "ok" if exec_result.ok else "failed"
                 return {
                     'host': server_creds.host,
                     'exit_code': exec_result.exited,
                     'status': status,
-                    'output_file': str(output_file)
+                    'output_file': str(output_file),
+                    'remote_log': remote_log
                 }
 
         except Exception as e:
-            logger.error(f"{server_creds.host}: {e}")
+            logger.error(f"{server_creds.display_name}: {e}")
             _write_runbash_output(
                 output_file,
                 server_creds,
@@ -799,10 +822,19 @@ def run_script(c, file, hosts_file='hosts.txt', sudo=True, timeout=300, output_d
 
     logger.info("Summary:")
     for item in sorted(summary, key=lambda x: x['host']):
+        display = next((s.display_name for s in servers if s.host == item['host']), item['host'])
+        
+        # Display exit code and status
         if item['exit_code'] is None:
-            logger.info(f"{item['host']}: {item['status']}")
+            status_str = item['status']
         else:
-            logger.info(f"{item['host']}: {item['exit_code']}")
+            status_str = f"exit {item['exit_code']} ({item['status']})"
+        
+        # Add remote log location for reference
+        if item.get('remote_log'):
+            status_str += f" - log: {item['remote_log']}"
+        
+        logger.info(f"{display}: {status_str}")
 
     end_time = datetime.now()
     duration = end_time - start_time
@@ -818,7 +850,8 @@ def _write_runbash_output(output_file, server_creds, script_path, steps, exec_re
     """Write per-host script output to a local file."""
     try:
         with open(output_file, 'w') as f:
-            f.write(f"Host: {server_creds.host}\n")
+            host_header = f"{server_creds.display_name} ({server_creds.host})" if server_creds.friendly_name else server_creds.host
+            f.write(f"Host: {host_header}\n")
             f.write(f"User: {server_creds.user}\n")
             f.write(f"Script: {script_path}\n")
             f.write(f"Timestamp: {datetime.now().isoformat()}\n")

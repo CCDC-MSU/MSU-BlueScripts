@@ -12,6 +12,12 @@ class ServerCredentials:
     password: Optional[str] = None
     key_file: Optional[str] = None
     port: int = 22
+    friendly_name: Optional[str] = None
+
+    @property
+    def display_name(self) -> str:
+        """Return friendly name if available, otherwise host"""
+        return self.friendly_name if self.friendly_name else self.host
 
 
 @dataclass

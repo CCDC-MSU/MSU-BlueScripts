@@ -186,8 +186,9 @@ class UserHardeningModule(HardeningModule):
         return sudo_users
 
     def _host_label(self) -> str:
-        label = self.server_info.credentials.host.replace(":", "_").replace("/", "_")
-        label = label.replace(" ", "_")
+        # Use friendly name if available, otherwise use host IP
+        base = self.server_info.credentials.display_name
+        label = base.replace(":", "_").replace("/", "_").replace(" ", "_")
         port = getattr(self.server_info.credentials, "port", 22)
         if port != 22:
             label = f"{label}_{port}"
@@ -216,9 +217,11 @@ class UserHardeningModule(HardeningModule):
         log_file = Path(log_path)
         log_file.parent.mkdir(parents=True, exist_ok=True)
 
+        creds = server_info.credentials
+        host_line = f"{creds.display_name} ({creds.host})" if creds.friendly_name else creds.host
         lines = [
             "User hardening password log",
-            f"Host: {server_info.credentials.host}",
+            f"Host: {host_line}",
             f"Generated: {self.run_timestamp}",
             "",
             "username\trole\tpassword",
