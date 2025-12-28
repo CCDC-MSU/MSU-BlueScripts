@@ -110,51 +110,103 @@ if [ "$is_alpine" -eq 1 ]; then
 fi
 
 ########################################
-# Non-Alpine (assume GNU grep w/ -P/-o)
+# Non-Alpine / Generic (Linux, BSD, etc.)
 ########################################
+
+# 1. Define Patterns
+
+# PCRE Patterns (Best Accuracy)
+export PCRE_CC='\b(?!000)(?:[0-9][- ]*?){13,19}\b'
+export PCRE_ADDR='\b[0-9]+\s\w+\s\w+\b'
+export PCRE_SSN='\b(?!000|666|9\d{2})\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b'
+export PCRE_PHONE='^(?:\+?[0-9]{1,3}[-.\s]?)?(?:\([0-9]{3}\)|[0-9]{3})[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}$'
+
+# ERE Patterns (Fallback)
+# Note: Single quotes in ERE need careful handling if passed around, but env vars help.
+# Pattern: Alphanumeric, single quote, or dash.
+export ERE_CC='([0-9][ -]?){13,19}'
+export ERE_ADDR='[0-9]+[[:space:]]+[[:alnum:]'\''-]+[[:space:]]+[[:alnum:]'\''-]+'
+export ERE_SSN='[0-9]{3}-[0-9]{2}-[0-9]{4}'
+export ERE_PHONE='^(\+?[0-9]{1,3}[-.[:space:]]?)?(\([0-9]{3}\)|[0-9]{3})[-.[:space:]]?[0-9]{3}[-.[:space:]]?[0-9]{4}$'
+
+# 2. Select Search Method
+
+if echo | grep -P "" >/dev/null 2>&1; then
+    # GNU Grep (Linux standard)
+    export SEARCH_CMD="grep -Po"
+    export SEARCH_TYPE="PCRE"
+elif command -v pcregrep >/dev/null 2>&1; then
+    # PCRE Grep (Common on BSDs/Hardened systems)
+    export SEARCH_CMD="pcregrep -o"
+    export SEARCH_TYPE="PCRE"
+else
+    # Standard POSIX/BSD Grep (ERE)
+    export SEARCH_CMD="grep -Eo"
+    export SEARCH_TYPE="ERE"
+fi
+
+# 3. Execution
+
+# We use find with -exec sh -c.
+# Variables exported above are inherited by the subshell.
 find "$dir" -type f -exec sh -c '
-  creditCardRegex='\''\b(?!000)(?:[0-9][- ]*?){13,19}\b'\''
-  addressRegex='\''\b[0-9]+\s\w+\s\w+\b'\''
-  ssnRegex='\''\b(?!000|666|9\d{2})\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b'\''
-  phoneNumberRegex='\''^(?:\+?[0-9]{1,3}[-.\s]?)?(?:\([0-9]{3}\)|[0-9]{3})[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}$'\''
-
-  scan_one() {
-    filePath=$1
-
-    cc=$(grep -Po "$creditCardRegex" "$filePath" 2>/dev/null)
-    if [ -n "$cc" ]; then
-      echo "File: $filePath"
-      echo "Credit Card Numbers:"
-      printf "%s\n" "$cc"
-      echo "------------------------"
+    # Select specific regex variables based on detected type
+    if [ "$SEARCH_TYPE" = "PCRE" ]; then
+        RE_CC="$PCRE_CC"
+        RE_ADDR="$PCRE_ADDR"
+        RE_SSN="$PCRE_SSN"
+        RE_PHONE="$PCRE_PHONE"
+    else
+        RE_CC="$ERE_CC"
+        RE_ADDR="$ERE_ADDR"
+        RE_SSN="$ERE_SSN"
+        RE_PHONE="$ERE_PHONE"
     fi
 
-    addr=$(grep -Po "$addressRegex" "$filePath" 2>/dev/null)
-    if [ -n "$addr" ]; then
-      echo "File: $filePath"
-      echo "Addresses:"
-      printf "%s\n" "$addr"
-      echo "------------------------"
-    fi
+    # Helper function to scan a single file
+    scan_one() {
+        filePath="$1"
+        
+        # Credit Card
+        # Word splitting on SEARCH_CMD is intended here (e.g. "grep -Po")
+        cc=$($SEARCH_CMD "$RE_CC" "$filePath" 2>/dev/null)
+        if [ -n "$cc" ]; then
+            echo "File: $filePath"
+            echo "Credit Card Numbers:"
+            printf "%s\n" "$cc"
+            echo "------------------------"
+        fi
 
-    ssn=$(grep -Po "$ssnRegex" "$filePath" 2>/dev/null)
-    if [ -n "$ssn" ]; then
-      echo "File: $filePath"
-      echo "Social Security Numbers:"
-      printf "%s\n" "$ssn"
-      echo "------------------------"
-    fi
+        # Address
+        addr=$($SEARCH_CMD "$RE_ADDR" "$filePath" 2>/dev/null)
+        if [ -n "$addr" ]; then
+            echo "File: $filePath"
+            echo "Addresses:"
+            printf "%s\n" "$addr"
+            echo "------------------------"
+        fi
 
-    phone=$(grep -Po "$phoneNumberRegex" "$filePath" 2>/dev/null)
-    if [ -n "$phone" ]; then
-      echo "File: $filePath"
-      echo "Phone Numbers:"
-      printf "%s\n" "$phone"
-      echo "------------------------"
-    fi
-  }
+        # SSN
+        ssn=$($SEARCH_CMD "$RE_SSN" "$filePath" 2>/dev/null)
+        if [ -n "$ssn" ]; then
+            echo "File: $filePath"
+            echo "Social Security Numbers:"
+            printf "%s\n" "$ssn"
+            echo "------------------------"
+        fi
 
-  for f do
-    scan_one "$f"
-  done
+        # Phone
+        phone=$($SEARCH_CMD "$RE_PHONE" "$filePath" 2>/dev/null)
+        if [ -n "$phone" ]; then
+            echo "File: $filePath"
+            echo "Phone Numbers:"
+            printf "%s\n" "$phone"
+            echo "------------------------"
+        fi
+    }
+
+    for f do
+        scan_one "$f"
+    done
 ' sh {} + 2>/dev/null
+
