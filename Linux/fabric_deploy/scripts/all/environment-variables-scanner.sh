@@ -51,11 +51,33 @@ check_root() {
 }
 
 # Scan running processes
+# Scan running processes
 scan_processes() {
     log_info "Scanning running processes for suspicious environment variables..."
     printf "\n"
     
     found_count=0
+    
+    OS_TYPE=$(uname)
+    
+    if [ "$OS_TYPE" = "Linux" ]; then
+        scan_processes_linux
+    elif [ "$OS_TYPE" = "FreeBSD" ]; then
+        scan_processes_freebsd
+    else
+        log_warn "Process scanning not fully supported on $OS_TYPE"
+        # Attempt generic scanning if possible or skip
+    fi
+    
+    if [ "$found_count" -eq 0 ]; then
+        log_success "No suspicious environment variables found in running processes"
+    else
+        log_alert "Found $found_count suspicious environment variable(s) in running processes"
+    fi
+    printf "\n"
+}
+
+scan_processes_linux() {
     total_procs=0
     
     for proc_dir in /proc/[0-9]*; do
@@ -90,39 +112,86 @@ scan_processes() {
         for var in $SUSPICIOUS_VARS; do
             # Use grep -z for null-separated environ
             if value=$(grep -z "^${var}=" "$environ_file" 2>/dev/null | tr '\0' '\n'); then
-                [ -z "$value" ] && continue
-                
-                value_content="${value#*=}"
-                
-                # Alert on finding
-                log_alert "Suspicious environment variable detected!"
-                printf "  ${YELLOW}PID:${NC} %s\n" "$pid"
-                printf "  ${YELLOW}User:${NC} %s\n" "$proc_user"
-                printf "  ${YELLOW}Variable:${NC} %s\n" "$var"
-                printf "  ${YELLOW}Value:${NC} %s\n" "$value_content"
-                printf "  ${YELLOW}Command:${NC} %s\n" "$cmdline"
-                
-                # Check if value contains suspicious paths
-                for susp_path in $SUSPICIOUS_PATHS; do
-                    if echo "$value_content" | grep -q "$susp_path"; then
-                        log_alert "  ⚠ Value contains suspicious path: $susp_path"
-                    fi
-                done
-                
-                printf "\n"
-                found_count=$((found_count + 1))
+                check_suspicious_var "$pid" "$proc_user" "$var" "${value#*=}" "$cmdline"
             fi
         done
     done
     
-    log_info "Scanned $total_procs processes"
-    if [ "$found_count" -eq 0 ]; then
-        log_success "No suspicious environment variables found in running processes"
-    else
-        log_alert "Found $found_count suspicious environment variable(s) in running processes"
-    fi
-    printf "\n"
+    log_info "Scanned $total_procs Linux processes"
 }
+
+scan_processes_freebsd() {
+    total_procs=0
+    
+    # Check if procstat is available
+    if ! command -v procstat >/dev/null 2>&1; then
+        log_warn "procstat not found. Required for scanning processes on FreeBSD."
+        return
+    fi
+    
+    # Iterate over all PIDs using ps
+    for pid in $(ps -ax -o pid | grep -v PID); do
+        total_procs=$((total_procs + 1))
+        
+        # Get process info
+        proc_user=$(ps -o user -p "$pid" | tail -n 1)
+        cmdline=$(ps -o command -p "$pid" | tail -n 1 | cut -c1-100)
+        
+        # Get environment using procstat -e
+        # procstat -e output format: PID  ENV  KEY  VALUE (approximately, usually:  PID  VAR  VALUE)
+        # We need to parse this carefully
+        
+        # Fetch environment for the PID
+        # Output looks like: "  PID COMM             ENVIRONMENT"
+        #                    "12345 sh               HOME=/home/user"
+        # It's cleaner to capture the output block
+        
+        env_output=$(procstat -e "$pid" 2>/dev/null)
+        
+        for var in $SUSPICIOUS_VARS; do
+            # Grep for the variable assignment in procstat output
+            # Look for line ending with variable definition
+            if value=$(echo "$env_output" | grep "[[:space:]]${var}="); then
+                # Extract value. procstat format: PID COMM VAR=VAL
+                # We can try to extract everything after VAR=
+                value_content=$(echo "$value" | sed "s/.*[[:space:]]${var}=//")
+                
+                check_suspicious_var "$pid" "$proc_user" "$var" "$value_content" "$cmdline"
+            fi
+        done
+    done
+    
+    log_info "Scanned $total_procs FreeBSD processes (via procstat)"
+}
+
+check_suspicious_var() {
+    local pid="$1"
+    local user="$2"
+    local var="$3"
+    local value="$4"
+    local cmd="$5"
+    
+    [ -z "$value" ] && return
+    
+    # Alert on finding
+    log_alert "Suspicious environment variable detected!"
+    printf "  ${YELLOW}PID:${NC} %s\n" "$pid"
+    printf "  ${YELLOW}User:${NC} %s\n" "$user"
+    printf "  ${YELLOW}Variable:${NC} %s\n" "$var"
+    printf "  ${YELLOW}Value:${NC} %s\n" "$value"
+    printf "  ${YELLOW}Command:${NC} %s\n" "$cmd"
+    
+    # Check if value contains suspicious paths
+    for susp_path in $SUSPICIOUS_PATHS; do
+        if echo "$value" | grep -q "$susp_path"; then
+            log_alert "  ⚠ Value contains suspicious path: $susp_path"
+        fi
+    done
+    
+    printf "\n"
+    found_count=$((found_count + 1))
+}
+
 
 # Scan system-wide environment files
 scan_system_files() {
@@ -138,13 +207,13 @@ scan_system_files() {
         [ -f "$file" ] || continue
         
         for var in $SUSPICIOUS_VARS; do
-            if grep -n "^[[:space:]]*export[[:space:]]*${var}=" "$file" 2>/dev/null | grep -v '^[[:space:]]*#' || \
-               grep -n "^[[:space:]]*${var}=" "$file" 2>/dev/null | grep -v '^[[:space:]]*#'; then
+            if grep -n "^[[:space:]]*export[[:space:]]*${var}=" "$file" 2>/dev/null || \
+               grep -n "^[[:space:]]*${var}=" "$file" 2>/dev/null; then
                 log_alert "Suspicious variable in system file!"
                 printf "  ${YELLOW}File:${NC} %s\n" "$file"
                 printf "  ${YELLOW}Variable:${NC} %s\n" "$var"
                 printf "  ${YELLOW}Content:${NC}\n"
-                grep -n "${var}=" "$file" 2>/dev/null | grep -v '^[[:space:]]*#' | sed 's/^/    /'
+                grep -n "${var}=" "$file" 2>/dev/null | sed 's/^/    /'
                 printf "\n"
                 found_count=$((found_count + 1))
             fi
@@ -157,12 +226,12 @@ scan_system_files() {
             [ -f "$file" ] || continue
             
             for var in $SUSPICIOUS_VARS; do
-                if grep -n "${var}=" "$file" 2>/dev/null | grep -v '^[[:space:]]*#' | grep -q .; then
+                if grep -n "${var}=" "$file" 2>/dev/null | grep -qv '^[[:space:]]*#'; then
                     log_alert "Suspicious variable in profile.d script!"
                     printf "  ${YELLOW}File:${NC} %s\n" "$file"
                     printf "  ${YELLOW}Variable:${NC} %s\n" "$var"
                     printf "  ${YELLOW}Content:${NC}\n"
-                    grep -n "${var}=" "$file" 2>/dev/null | grep -v '^[[:space:]]*#' | sed 's/^/    /'
+                    grep -n "${var}=" "$file" 2>/dev/null | sed 's/^/    /'
                     printf "\n"
                     found_count=$((found_count + 1))
                 fi
@@ -198,13 +267,13 @@ scan_user_homes() {
             [ -f "$file" ] || continue
             
             for var in $SUSPICIOUS_VARS; do
-                if grep -n "${var}=" "$file" 2>/dev/null | grep -v '^[[:space:]]*#' | grep -q .; then
+                if grep -n "${var}=" "$file" 2>/dev/null | grep -qv '^[[:space:]]*#'; then
                     log_alert "Suspicious variable in user config!"
                     printf "  ${YELLOW}User:${NC} %s\n" "$username"
                     printf "  ${YELLOW}File:${NC} %s\n" "$file"
                     printf "  ${YELLOW}Variable:${NC} %s\n" "$var"
                     printf "  ${YELLOW}Content:${NC}\n"
-                    grep -n "${var}=" "$file" 2>/dev/null | grep -v '^[[:space:]]*#' | sed 's/^/    /'
+                    grep -n "${var}=" "$file" 2>/dev/null | sed 's/^/    /'
                     printf "\n"
                     found_count=$((found_count + 1))
                 fi
