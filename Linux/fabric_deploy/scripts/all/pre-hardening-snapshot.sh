@@ -4,11 +4,23 @@
 # Creates comprehensive backup before system hardening
 #
 
+
 BACKUP_ROOT="/root/pre-hardening-backups"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 BACKUP_DIR="${BACKUP_ROOT}/${TIMESTAMP}"
 FILES_DIR="${BACKUP_DIR}/files"
 STATE_DIR="${BACKUP_DIR}/state"
+
+# Detect OS
+OS="$(uname -s)"
+case "${OS}" in
+    Linux*)     OS_TYPE="Linux";;
+    FreeBSD*)   OS_TYPE="FreeBSD";;
+    OpenBSD*)   OS_TYPE="OpenBSD";;
+    NetBSD*)    OS_TYPE="NetBSD";;
+    *)          OS_TYPE="Unknown";;
+esac
+
 
 # Colors for output
 RED='\033[0;31m'
@@ -56,11 +68,20 @@ backup_file() {
 # ============================================================================
 log_info "Backing up user and authentication files..."
 backup_file /etc/passwd
-backup_file /etc/shadow
 backup_file /etc/group
-backup_file /etc/gshadow
 backup_file /etc/sudoers
 backup_file /etc/sudoers.d
+
+if [ "$OS_TYPE" = "Linux" ]; then
+    backup_file /etc/shadow
+    backup_file /etc/gshadow
+elif [ "$OS_TYPE" = "FreeBSD" ] || [ "$OS_TYPE" = "OpenBSD" ] || [ "$OS_TYPE" = "NetBSD" ]; then
+    backup_file /etc/master.passwd
+    backup_file /etc/login.conf
+    backup_file /etc/login.conf.db
+    backup_file /etc/security/passwd
+    backup_file /etc/security/group
+fi
 
 # ============================================================================
 # SSH CONFIGURATION
@@ -82,35 +103,57 @@ backup_file /etc/security
 # NETWORK CONFIGURATION
 # ============================================================================
 log_info "Backing up network configuration..."
-backup_file /etc/network/interfaces
-backup_file /etc/network/interfaces.d
-backup_file /etc/sysconfig/network-scripts
-backup_file /etc/netplan
 backup_file /etc/hosts
 backup_file /etc/hosts.allow
 backup_file /etc/hosts.deny
 backup_file /etc/resolv.conf
 
+if [ "$OS_TYPE" = "Linux" ]; then
+    backup_file /etc/network/interfaces
+    backup_file /etc/network/interfaces.d
+    backup_file /etc/sysconfig/network-scripts
+    backup_file /etc/netplan
+elif [ "$OS_TYPE" = "FreeBSD" ] || [ "$OS_TYPE" = "NetBSD" ]; then
+    backup_file /etc/rc.conf
+    backup_file /etc/rc.conf.local
+elif [ "$OS_TYPE" = "OpenBSD" ]; then
+    backup_file /etc/hostname.*
+    backup_file /etc/netstart
+    backup_file /etc/rc.conf
+    backup_file /etc/rc.conf.local
+fi
+
 # ============================================================================
 # SELINUX CONFIGURATION
 # ============================================================================
-log_info "Backing up SELinux configuration..."
-backup_file /etc/selinux
-backup_file /etc/sysconfig/selinux
-
 # ============================================================================
-# APPARMOR CONFIGURATION
+# ACCESS CONTROL (SELinux/AppArmor/PF)
 # ============================================================================
-log_info "Backing up AppArmor configuration..."
-backup_file /etc/apparmor.d
-backup_file /etc/apparmor
+if [ "$OS_TYPE" = "Linux" ]; then
+    log_info "Backing up SELinux/AppArmor configuration..."
+    backup_file /etc/selinux
+    backup_file /etc/sysconfig/selinux
+    backup_file /etc/apparmor.d
+    backup_file /etc/apparmor
+elif [ "$OS_TYPE" = "FreeBSD" ] || [ "$OS_TYPE" = "OpenBSD" ] || [ "$OS_TYPE" = "NetBSD" ]; then
+    log_info "Backing up Packet Filter (PF) configuration..."
+    backup_file /etc/pf.conf
+    backup_file /etc/pf.os
+fi
 
 # ============================================================================
 # SYSTEMD CONFIGURATION
 # ============================================================================
-log_info "Backing up systemd configuration..."
-backup_file /etc/systemd
-backup_file /etc/default
+log_info "Backing up init system configuration..."
+if [ "$OS_TYPE" = "Linux" ]; then
+    backup_file /etc/systemd
+    backup_file /etc/default
+elif [ "$OS_TYPE" = "FreeBSD" ] || [ "$OS_TYPE" = "NetBSD" ]; then
+    backup_file /usr/local/etc/rc.d
+    backup_file /etc/rc.d
+elif [ "$OS_TYPE" = "OpenBSD" ]; then
+    backup_file /etc/rc.d
+fi
 
 # ============================================================================
 # CRON JOBS
@@ -123,13 +166,16 @@ backup_file /etc/cron.hourly
 backup_file /etc/cron.weekly
 backup_file /etc/cron.monthly
 backup_file /var/spool/cron
+backup_file /var/cron/tabs
 
 # ============================================================================
 # FIREWALL CONFIGURATION
 # ============================================================================
-log_info "Backing up firewall configuration..."
-backup_file /etc/sysconfig/iptables
-backup_file /etc/iptables
+if [ "$OS_TYPE" = "Linux" ]; then
+    log_info "Backing up firewall configuration..."
+    backup_file /etc/sysconfig/iptables
+    backup_file /etc/iptables
+fi
 
 # ============================================================================
 # OTHER SECURITY FILES
@@ -157,44 +203,71 @@ date > "${STATE_DIR}/date.txt" 2>&1
 
 # Running processes
 log_info "Capturing running processes..."
-ps auxf > "${STATE_DIR}/processes.txt" 2>&1
+if [ "$OS_TYPE" = "Linux" ]; then
+    ps auxf > "${STATE_DIR}/processes.txt" 2>&1
+else
+    ps aux > "${STATE_DIR}/processes.txt" 2>&1
+fi
 
 # Open ports and connections
 log_info "Capturing network connections..."
-if command -v ss >/dev/null 2>&1; then
-    ss -tulpn > "${STATE_DIR}/listening_ports.txt" 2>&1
-    ss -tupn > "${STATE_DIR}/established_connections.txt" 2>&1
-elif command -v netstat >/dev/null 2>&1; then
-    netstat -tulpn > "${STATE_DIR}/listening_ports.txt" 2>&1
-    netstat -tupn > "${STATE_DIR}/established_connections.txt" 2>&1
+if [ "$OS_TYPE" = "Linux" ]; then
+    if command -v ss >/dev/null 2>&1; then
+        ss -tulpn > "${STATE_DIR}/listening_ports.txt" 2>&1
+        ss -tupn > "${STATE_DIR}/established_connections.txt" 2>&1
+    elif command -v netstat >/dev/null 2>&1; then
+        netstat -tulpn > "${STATE_DIR}/listening_ports.txt" 2>&1
+        netstat -tupn > "${STATE_DIR}/established_connections.txt" 2>&1
+    fi
+elif [ "$OS_TYPE" = "FreeBSD" ]; then
+    sockstat -46l > "${STATE_DIR}/listening_ports.txt" 2>&1
+    sockstat -46c > "${STATE_DIR}/established_connections.txt" 2>&1
+elif [ "$OS_TYPE" = "OpenBSD" ]; then
+    netstat -na -f inet | grep LISTEN > "${STATE_DIR}/listening_ports.txt" 2>&1
+    netstat -na -f inet | grep ESTABLISHED > "${STATE_DIR}/established_connections.txt" 2>&1
 else
-    log_warn "Neither ss nor netstat found"
+    if command -v netstat >/dev/null 2>&1; then
+        netstat -na > "${STATE_DIR}/network_connections.txt" 2>&1
+    fi
 fi
 
 # Network configuration state
 log_info "Capturing network configuration state..."
-if command -v ip >/dev/null 2>&1; then
-    ip addr show > "${STATE_DIR}/ip_addresses.txt" 2>&1
-    ip route show > "${STATE_DIR}/ip_routes.txt" 2>&1
-    ip link show > "${STATE_DIR}/ip_links.txt" 2>&1
-elif command -v ifconfig >/dev/null 2>&1; then
+if [ "$OS_TYPE" = "Linux" ]; then
+    if command -v ip >/dev/null 2>&1; then
+        ip addr show > "${STATE_DIR}/ip_addresses.txt" 2>&1
+        ip route show > "${STATE_DIR}/ip_routes.txt" 2>&1
+        ip link show > "${STATE_DIR}/ip_links.txt" 2>&1
+    elif command -v ifconfig >/dev/null 2>&1; then
+        ifconfig -a > "${STATE_DIR}/ifconfig.txt" 2>&1
+        route -n > "${STATE_DIR}/routes.txt" 2>&1
+    fi
+else
     ifconfig -a > "${STATE_DIR}/ifconfig.txt" 2>&1
-    route -n > "${STATE_DIR}/routes.txt" 2>&1
+    netstat -rn > "${STATE_DIR}/routes.txt" 2>&1
 fi
 
-# Firewall rules (iptables)
-log_info "Capturing iptables rules..."
-if command -v iptables >/dev/null 2>&1; then
-    iptables -L -n -v --line-numbers > "${STATE_DIR}/iptables_filter.txt" 2>&1
-    iptables -t nat -L -n -v --line-numbers > "${STATE_DIR}/iptables_nat.txt" 2>&1
-    iptables -t mangle -L -n -v --line-numbers > "${STATE_DIR}/iptables_mangle.txt" 2>&1
-    iptables -t raw -L -n -v --line-numbers > "${STATE_DIR}/iptables_raw.txt" 2>&1
-    iptables-save > "${STATE_DIR}/iptables_save.txt" 2>&1
-fi
-
-if command -v ip6tables >/dev/null 2>&1; then
-    ip6tables -L -n -v --line-numbers > "${STATE_DIR}/ip6tables_filter.txt" 2>&1
-    ip6tables-save > "${STATE_DIR}/ip6tables_save.txt" 2>&1
+# Firewall rules
+log_info "Capturing firewall rules..."
+if [ "$OS_TYPE" = "Linux" ]; then
+    if command -v iptables >/dev/null 2>&1; then
+        iptables -L -n -v --line-numbers > "${STATE_DIR}/iptables_filter.txt" 2>&1
+        iptables -t nat -L -n -v --line-numbers > "${STATE_DIR}/iptables_nat.txt" 2>&1
+        iptables -t mangle -L -n -v --line-numbers > "${STATE_DIR}/iptables_mangle.txt" 2>&1
+        iptables -t raw -L -n -v --line-numbers > "${STATE_DIR}/iptables_raw.txt" 2>&1
+        iptables-save > "${STATE_DIR}/iptables_save.txt" 2>&1
+    fi
+    if command -v ip6tables >/dev/null 2>&1; then
+        ip6tables -L -n -v --line-numbers > "${STATE_DIR}/ip6tables_filter.txt" 2>&1
+        ip6tables-save > "${STATE_DIR}/ip6tables_save.txt" 2>&1
+    fi
+elif [ "$OS_TYPE" = "FreeBSD" ] || [ "$OS_TYPE" = "OpenBSD" ]; then
+    if command -v pfctl >/dev/null 2>&1; then
+        pfctl -sa > "${STATE_DIR}/pf_rules.txt" 2>&1
+    fi
+    if command -v ipfw >/dev/null 2>&1; then
+        ipfw list > "${STATE_DIR}/ipfw_rules.txt" 2>&1
+    fi
 fi
 
 # SELinux status
@@ -216,13 +289,21 @@ if command -v aa-status >/dev/null 2>&1; then
     aa-status > "${STATE_DIR}/apparmor_status.txt" 2>&1
 fi
 
-# Systemd services
-log_info "Capturing systemd services..."
-if command -v systemctl >/dev/null 2>&1; then
+# System services
+log_info "Capturing system services..."
+if [ "$OS_TYPE" = "Linux" ] && command -v systemctl >/dev/null 2>&1; then
     systemctl list-units --type=service --all > "${STATE_DIR}/systemd_services.txt" 2>&1
     systemctl list-unit-files --type=service > "${STATE_DIR}/systemd_service_files.txt" 2>&1
     systemctl list-units --type=socket --all > "${STATE_DIR}/systemd_sockets.txt" 2>&1
     systemctl list-units --type=timer --all > "${STATE_DIR}/systemd_timers.txt" 2>&1
+elif [ "$OS_TYPE" = "FreeBSD" ]; then
+    service -e > "${STATE_DIR}/services_enabled.txt" 2>&1
+    if command -v sockstat >/dev/null 2>&1; then
+        sockstat -46l > "${STATE_DIR}/listening_services.txt" 2>&1
+    fi
+elif [ "$OS_TYPE" = "OpenBSD" ]; then
+    rcctl ls started > "${STATE_DIR}/services_started.txt" 2>&1
+    rcctl ls on > "${STATE_DIR}/services_enabled.txt" 2>&1
 fi
 
 # Init scripts (for non-systemd systems)
@@ -232,7 +313,11 @@ fi
 
 # Loaded kernel modules
 log_info "Capturing loaded kernel modules..."
-lsmod > "${STATE_DIR}/loaded_modules.txt" 2>&1
+if command -v lsmod >/dev/null 2>&1; then
+    lsmod > "${STATE_DIR}/loaded_modules.txt" 2>&1
+elif command -v kldstat >/dev/null 2>&1; then
+    kldstat > "${STATE_DIR}/loaded_modules.txt" 2>&1
+fi
 
 # Kernel parameters
 log_info "Capturing kernel parameters..."
@@ -244,6 +329,10 @@ if command -v dpkg >/dev/null 2>&1; then
     dpkg -l > "${STATE_DIR}/packages_dpkg.txt" 2>&1
 elif command -v rpm >/dev/null 2>&1; then
     rpm -qa > "${STATE_DIR}/packages_rpm.txt" 2>&1
+elif command -v pkg >/dev/null 2>&1; then
+    pkg info > "${STATE_DIR}/packages_pkg.txt" 2>&1
+elif command -v pkg_info >/dev/null 2>&1; then
+    pkg_info > "${STATE_DIR}/packages_openbsd.txt" 2>&1
 fi
 
 # User login history
@@ -289,7 +378,11 @@ log_info "Creating metadata..."
     echo "Backup created: $(date)"
     echo "Hostname: $(hostname)"
     echo "Kernel: $(uname -r)"
-    echo "Distribution: $(cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d'"' -f2)"
+    if [ -f /etc/os-release ]; then
+        echo "Distribution: $(grep PRETTY_NAME /etc/os-release | cut -d'"' -f2)"
+    else
+        echo "Distribution: $(uname -s) $(uname -r)"
+    fi
     echo "Backup location: ${BACKUP_DIR}"
 } > "${BACKUP_DIR}/metadata.txt"
 
