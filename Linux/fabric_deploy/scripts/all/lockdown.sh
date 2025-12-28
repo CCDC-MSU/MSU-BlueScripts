@@ -136,7 +136,76 @@ start_safety_net() {
       ) &
       echo "SAFETY NET: Auto-revert in $SAFETY_NET_SECONDS seconds. Cancel: kill $!"
       ;;
+    firewalld)
+      (
+        sleep "$SAFETY_NET_SECONDS"
+        echo "SAFETY NET: Reverting firewalld (reload)."
+        firewall-cmd --reload >/dev/null 2>&1
+      ) &
+      echo "SAFETY NET: Auto-revert in $SAFETY_NET_SECONDS seconds. Cancel: kill $!"
+      ;;
   esac
+}
+
+# ---------------- LINUX: FIREWALLD ----------------
+apply_firewalld() {
+  echo "[INFO] Backend: firewalld (firewall-cmd)"
+  start_safety_net firewalld
+
+  # 1. Clean slate for runtime (reload restores permanent, which is hopefully safe-ish, but we are about to override it)
+  # We assume 'reload' clears any previous runtime direct rules we added.
+  run_cmd firewall-cmd --reload
+
+  # 2. Set default zone to drop to harden inputs (this doesn't affect direct rules with priority < zone)
+  # But it helps ensure nothing slips through if direct rules fail.
+  run_cmd firewall-cmd --set-default-zone=drop
+
+  # 3. Direct Rules - Priority 0 (Highest)
+  # Loopback
+  run_cmd firewall-cmd --direct --add-rule ipv4 filter INPUT 0 -i lo -j ACCEPT
+  run_cmd firewall-cmd --direct --add-rule ipv4 filter OUTPUT 0 -o lo -j ACCEPT
+
+  # SSH (Stateless - allows surviving state flush effectively)
+  # Note: Direct rules bypass zones.
+  for ip in $TRUSTED_IPS_NORM; do
+    run_cmd firewall-cmd --direct --add-rule ipv4 filter INPUT 0 -p tcp -s "$ip" --dport "$SSH_PORT" -j ACCEPT
+    run_cmd firewall-cmd --direct --add-rule ipv4 filter OUTPUT 0 -p tcp -d "$ip" --sport "$SSH_PORT" -j ACCEPT
+  done
+
+  if [ "$MODE" = "allow_internet" ]; then
+    echo "[INFO] Allowing outbound updates statefully (DNS/HTTP/HTTPS/NTP/ICMP)."
+    
+    # We use priority 1 for these, below the stateless SSH/Loopback
+    # Outbound (stateful)
+    run_cmd firewall-cmd --direct --add-rule ipv4 filter OUTPUT 1 -p udp --dport 53  -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
+    run_cmd firewall-cmd --direct --add-rule ipv4 filter OUTPUT 1 -p tcp --dport 53  -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
+    run_cmd firewall-cmd --direct --add-rule ipv4 filter OUTPUT 1 -p tcp --dport 80  -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
+    run_cmd firewall-cmd --direct --add-rule ipv4 filter OUTPUT 1 -p tcp --dport 443 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
+    run_cmd firewall-cmd --direct --add-rule ipv4 filter OUTPUT 1 -p udp --dport 123 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
+    run_cmd firewall-cmd --direct --add-rule ipv4 filter OUTPUT 1 -p icmp            -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
+
+    # Inbound return traffic (stateful)
+    run_cmd firewall-cmd --direct --add-rule ipv4 filter INPUT 1 -p udp --sport 53  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    run_cmd firewall-cmd --direct --add-rule ipv4 filter INPUT 1 -p tcp --sport 53  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    run_cmd firewall-cmd --direct --add-rule ipv4 filter INPUT 1 -p tcp -m multiport --sports 80,443 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    run_cmd firewall-cmd --direct --add-rule ipv4 filter INPUT 1 -p udp --sport 123 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    run_cmd firewall-cmd --direct --add-rule ipv4 filter INPUT 1 -p icmp            -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  fi
+
+  # Logging (Priority 998)
+  run_cmd_warn firewall-cmd --direct --add-rule ipv4 filter INPUT 998 -m limit --limit 10/min --limit-burst 20 \
+    -j LOG --log-prefix "$LOG_PREFIX_IN" --log-level 4
+  run_cmd_warn firewall-cmd --direct --add-rule ipv4 filter OUTPUT 998 -m limit --limit 10/min --limit-burst 20 \
+    -j LOG --log-prefix "$LOG_PREFIX_OUT" --log-level 4
+
+  # DROP ALL (Priority 999) - Forces strict containment
+  # This severs any existing connections not matched by above rules.
+  run_cmd firewall-cmd --direct --add-rule ipv4 filter INPUT 999 -j DROP
+  run_cmd firewall-cmd --direct --add-rule ipv4 filter OUTPUT 999 -j DROP
+
+  echo "[INFO] Firewalld configured."
+  echo "      Watch: journalctl -k -f | grep 'GO_DARK_'"
+  return 0
 }
 
 # ---------------- LINUX: IPTABLES ----------------
@@ -377,7 +446,10 @@ OS=$(uname -s 2>/dev/null || echo unknown)
 
 case "$OS" in
   Linux*)
-    if command -v iptables >/dev/null 2>&1; then
+    # Check for firewalld first (active)
+    if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+      apply_firewalld && exit 0
+    elif command -v iptables >/dev/null 2>&1; then
       apply_iptables && exit 0
     elif command -v nft >/dev/null 2>&1; then
       apply_nft && exit 0
@@ -397,6 +469,7 @@ case "$OS" in
   *)
     if command -v pfctl >/dev/null 2>&1; then apply_pf && exit 0; fi
     if command -v ipfw >/dev/null 2>&1; then apply_ipfw && exit 0; fi
+    if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then apply_firewalld && exit 0; fi
     if command -v iptables >/dev/null 2>&1; then apply_iptables && exit 0; fi
     if command -v nft >/dev/null 2>&1; then apply_nft && exit 0; fi
     apply_tcp_wrappers && exit 0
