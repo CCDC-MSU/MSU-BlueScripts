@@ -81,6 +81,10 @@ main() {
   ensure_root
   mkdirs
 
+  # Archive legacy SSH trust files (considered security risks)
+  test -f /etc/hosts.equiv && mv /etc/hosts.equiv /etc/hosts.equiv~ &> /dev/null
+  test -f /etc/shosts.equiv && mv /etc/shosts.equiv /etc/shosts.equiv~ &> /dev/null
+
   if is_alpine; then
     echo "Detected Alpine: archiving authorized_keys to $DEST"
     archive_alpine
