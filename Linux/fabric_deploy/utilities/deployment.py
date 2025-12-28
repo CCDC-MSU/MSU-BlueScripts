@@ -138,8 +138,9 @@ class HardeningDeployer:
         Returns:
             Dictionary with results and summary
         """
-        host_label = self.conn.host.replace(":", "_")
-        logger.info(f"Starting hardening deployment on {self.conn.host}")
+        # Use friendly name if available via credentials.display_name
+        host_label = self.server_info.credentials.display_name.replace(":", "_").replace("/", "_")
+        logger.info(f"Starting hardening deployment on {self.server_info.credentials.display_name} ({self.conn.host})")
         if dry_run:
             logger.info("DRY RUN MODE - No changes will be made")
         

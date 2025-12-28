@@ -29,10 +29,26 @@ def load_config(config_file: str = None) -> dict:
 
 
 def parse_hosts_file(hosts_file: str) -> List[ServerCredentials]:
-    """Parse hosts file with credentials per host"""
+    """Parse hosts file with credentials per host
+    
+    Supported formats:
+        host:user:password                       - password auth
+        host:user:keyfile                        - SSH key auth (if path-like)
+        host:user:password:port                  - custom port
+        host:user:password:friendly_name         - friendly name (starts with alpha)
+        host:user:password:port:friendly_name    - port and friendly name
+    """
     servers = []
     config = load_config()
     logger.info(f"Parsing hosts file: {hosts_file}")
+    
+    def _is_port(value: str) -> bool:
+        """Check if value looks like a port number"""
+        return value.isdigit()
+    
+    def _is_friendly_name(value: str) -> bool:
+        """Check if value looks like a friendly name (starts with alpha)"""
+        return value and value[0].isalpha()
     
     try:
         with open(hosts_file, 'r') as f:
@@ -44,43 +60,78 @@ def parse_hosts_file(hosts_file: str) -> List[ServerCredentials]:
                     continue
                 
                 try:
-                    # Parse different formats:
-                    # Format 1: host:user:password
-                    # Format 2: host:user:password:port
-                    # Format 3: host:user:key_file
-                    # Format 4: host (uses defaults from config)
-                    
+                    # Parse different formats
                     parts = line.split(':')
+                    
+                    host = None
+                    user = None
+                    password = None
+                    key_file = None
+                    port = 22
+                    friendly_name = None
                     
                     if len(parts) == 1:
                         # Just host, rely on SSH config or fabric defaults
-                        # We no longer pull defaults from config.yaml's connection section as requested
                         host = parts[0]
-                        # Use root/password defaults if they were in config (backward compat) but preferred is SSH key/config
                         user = config.get('connection', {}).get('user', 'root')
                         password = config.get('connection', {}).get('password')
-                        servers.append(ServerCredentials(host=host, user=user, password=password))
                         
                     elif len(parts) == 3:
                         # host:user:password_or_keyfile
                         host, user, auth = parts
-                        if auth.startswith('/') or auth.endswith('.pem') or auth.endswith('.key'):
-                            # Looks like a key file path
-                            servers.append(ServerCredentials(host=host, user=user, key_file=auth))
+                        if auth.startswith('/') or auth.startswith('~') or auth.endswith('.pem') or auth.endswith('.key'):
+                            key_file = auth
                         else:
-                            # Treat as password
-                            servers.append(ServerCredentials(host=host, user=user, password=auth))
+                            password = auth
                             
                     elif len(parts) == 4:
-                        # host:user:password:port
-                        host, user, password, port = parts
-                        servers.append(ServerCredentials(host=host, user=user, password=password, port=int(port)))
+                        # Could be:
+                        # - host:user:password:port (4th is numeric)
+                        # - host:user:password:friendly_name (4th starts with alpha)
+                        host, user, auth, fourth = parts
                         
+                        if auth.startswith('/') or auth.startswith('~') or auth.endswith('.pem') or auth.endswith('.key'):
+                            key_file = auth
+                        else:
+                            password = auth
+                        
+                        if _is_port(fourth):
+                            port = int(fourth)
+                        elif _is_friendly_name(fourth):
+                            friendly_name = fourth
+                        else:
+                            logger.warning(f"Ambiguous 4th field on line {line_num}: {fourth}")
+                            
+                    elif len(parts) == 5:
+                        # host:user:password:port:friendly_name
+                        host, user, auth, port_str, friendly_name = parts
+                        
+                        if auth.startswith('/') or auth.startswith('~') or auth.endswith('.pem') or auth.endswith('.key'):
+                            key_file = auth
+                        else:
+                            password = auth
+                        
+                        if _is_port(port_str):
+                            port = int(port_str)
+                        else:
+                            logger.warning(f"Invalid port on line {line_num}: {port_str}")
+                            continue
+                            
                     else:
                         logger.warning(f"Invalid host format on line {line_num}: {line}")
                         continue
-                        
-                    logger.debug(f"Added server: {host} (user: {user})")
+                    
+                    servers.append(ServerCredentials(
+                        host=host,
+                        user=user,
+                        password=password,
+                        key_file=key_file,
+                        port=port,
+                        friendly_name=friendly_name
+                    ))
+                    
+                    display = friendly_name if friendly_name else host
+                    logger.debug(f"Added server: {display} (host: {host}, user: {user})")
                     
                 except Exception as e:
                     logger.error(f"Error parsing line {line_num} in {hosts_file}: {e}")
