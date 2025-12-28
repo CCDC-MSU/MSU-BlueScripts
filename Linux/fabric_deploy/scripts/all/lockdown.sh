@@ -1,13 +1,11 @@
 #!/bin/sh
-# go_dark_unified.sh - Locks down Linux/BSD by applying the best available firewall backend.
-# Backends attempted (by OS preference):
-#   Linux: iptables -> nftables -> TCP Wrappers
-#   BSD/Darwin: pf -> ipfw -> TCP Wrappers
+# go_dark_unified.sh
+# Default: lockdown (SSH only from trusted, block new outbound; SSH/loopback stateless)
+# Flag: --allow-internet (still inbound locked; allow outbound updates statefully)
 
-# --- CONFIG ---
+# ---------------- CONFIG ----------------
 SSH_PORT=22
 
-# Put your trusted IPv4 addresses here (one per line or space-separated)
 TRUSTED_IPS="
 203.0.113.10
 198.51.100.7
@@ -19,12 +17,48 @@ TRUSTED_IPS="
 198.51.100.99
 "
 
-# Safety net: auto-revert after N seconds to prevent lockout (0 disables)
+# Safety net: auto-revert after N seconds (0 disables)
 SAFETY_NET_SECONDS=60
-# --- END CONFIG ---
+
+LOG_PREFIX_IN="GO_DARK_DENY_IN "
+LOG_PREFIX_OUT="GO_DARK_DENY_OUT "
+# -------------- END CONFIG --------------
+
+MODE="lockdown"
+case "${1:-}" in
+  --allow-internet|-a) MODE="allow_internet" ;;
+  --lockdown|-l|"")    MODE="lockdown" ;;
+  --help|-h)
+    echo "Usage:"
+    echo "  $0                 # lockdown (SSH-only, no new outbound; SSH/loopback stateless)"
+    echo "  $0 --allow-internet  # allow outbound updates (stateful) while inbound stays locked"
+    exit 0
+    ;;
+  *)
+    echo "Unknown argument: $1"
+    exit 1
+    ;;
+esac
+
+# Must be root
+if command -v id >/dev/null 2>&1; then
+  if [ "$(id -u)" -ne 0 ]; then
+    echo "ERROR: must be run as root."
+    exit 1
+  fi
+fi
+
+run_cmd() {
+  echo "+ $*"
+  "$@"
+}
+
+run_cmd_warn() {
+  echo "+ $*"
+  "$@" || echo "[WARN] command failed (continuing): $*"
+}
 
 validate_ipv4() {
-  # Returns 0 if valid IPv4, 1 otherwise
   echo "$1" | awk -F. '
     NF!=4 { exit 1 }
     {
@@ -37,27 +71,37 @@ validate_ipv4() {
 }
 
 norm_ip_list() {
-  # Collapse whitespace/newlines to a single space-separated list
   printf "%s\n" "$1" | awk 'NF { printf "%s ", $1 }'
 }
 
-print_trusted_ips() {
-  for ip in $TRUSTED_IPS_NORM; do
-    echo "  - $ip"
-  done
-}
+TRUSTED_IPS_NORM=$(norm_ip_list "$TRUSTED_IPS")
+if [ -z "$TRUSTED_IPS_NORM" ]; then
+  echo "ERROR: No trusted IPs configured."
+  exit 1
+fi
+for ip in $TRUSTED_IPS_NORM; do
+  if ! validate_ipv4 "$ip"; then
+    echo "ERROR: Invalid IP in TRUSTED_IPS: $ip"
+    exit 1
+  fi
+done
 
+echo "MODE: $MODE"
+echo "SSH allowed only from trusted IPs on port $SSH_PORT:"
+for ip in $TRUSTED_IPS_NORM; do echo "  - $ip"; done
+echo "WARNING: Applying rules in 10 seconds. Ctrl+C to abort."
+sleep 10
+
+# ---------------- SAFETY NET ----------------
 start_safety_net() {
   backend="$1"
-  pid=""
-
   [ "$SAFETY_NET_SECONDS" -gt 0 ] 2>/dev/null || return 0
 
   case "$backend" in
     iptables)
       (
         sleep "$SAFETY_NET_SECONDS"
-        echo "SAFETY NET: Reverting iptables rules (flushing + ACCEPT)."
+        echo "SAFETY NET: Reverting iptables (flush + ACCEPT all)."
         iptables -F
         iptables -X
         iptables -Z
@@ -65,7 +109,7 @@ start_safety_net() {
         iptables -P FORWARD ACCEPT
         iptables -P OUTPUT ACCEPT
       ) &
-      pid=$!
+      echo "SAFETY NET: Auto-revert in $SAFETY_NET_SECONDS seconds. Cancel: kill $!"
       ;;
     nft)
       (
@@ -73,7 +117,7 @@ start_safety_net() {
         echo "SAFETY NET: Reverting nftables (flush ruleset)."
         nft flush ruleset
       ) &
-      pid=$!
+      echo "SAFETY NET: Auto-revert in $SAFETY_NET_SECONDS seconds. Cancel: kill $!"
       ;;
     pf)
       (
@@ -81,7 +125,7 @@ start_safety_net() {
         echo "SAFETY NET: Disabling pf (pfctl -d)."
         pfctl -d >/dev/null 2>&1
       ) &
-      pid=$!
+      echo "SAFETY NET: Auto-revert in $SAFETY_NET_SECONDS seconds. Cancel: kill $!"
       ;;
     ipfw)
       (
@@ -90,164 +134,245 @@ start_safety_net() {
         ipfw -q flush
         ipfw add 65535 allow ip from any to any
       ) &
-      pid=$!
-      ;;
-    *)
-      return 0
+      echo "SAFETY NET: Auto-revert in $SAFETY_NET_SECONDS seconds. Cancel: kill $!"
       ;;
   esac
-
-  echo "SAFETY NET: Will auto-revert in $SAFETY_NET_SECONDS seconds. To cancel: kill $pid"
 }
 
+# ---------------- LINUX: IPTABLES ----------------
 apply_iptables() {
-  echo "[INFO] Using iptables."
+  echo "[INFO] Backend: iptables"
 
-  iptables -F
-  iptables -X
-  iptables -Z
+  # Safer ordering: build rules, then set DROP policies last.
+  run_cmd iptables -F
+  run_cmd iptables -X
+  run_cmd iptables -Z
 
-  iptables -P INPUT DROP
-  iptables -P FORWARD DROP
-  iptables -P OUTPUT ACCEPT
+  run_cmd iptables -P INPUT ACCEPT
+  run_cmd iptables -P FORWARD ACCEPT
+  run_cmd iptables -P OUTPUT ACCEPT
 
-  iptables -A INPUT -i lo -j ACCEPT
-  iptables -A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+  # Loopback (stateless)
+  run_cmd iptables -A INPUT  -i lo -j ACCEPT
+  run_cmd iptables -A OUTPUT -o lo -j ACCEPT
 
+  # SSH (stateless): allow both directions explicitly, NO conntrack.
   for ip in $TRUSTED_IPS_NORM; do
-    iptables -A INPUT -p tcp -s "$ip" --dport "$SSH_PORT" -j ACCEPT
+    run_cmd iptables -A INPUT  -p tcp -s "$ip" --dport "$SSH_PORT" -j ACCEPT
+    run_cmd iptables -A OUTPUT -p tcp -d "$ip" --sport "$SSH_PORT" -j ACCEPT
   done
 
-  echo "Firewall is now in 'go dark' mode (iptables). SSH allowed only from trusted IPs."
+  if [ "$MODE" = "allow_internet" ]; then
+    echo "[INFO] Allowing outbound updates statefully (DNS/HTTP/HTTPS/NTP/ICMP)."
+
+    # Outbound (stateful) – allow NEW+ESTABLISHED to destination ports
+    run_cmd iptables -A OUTPUT -p udp --dport 53  -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
+    run_cmd iptables -A OUTPUT -p tcp --dport 53  -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
+    run_cmd iptables -A OUTPUT -p tcp --dport 80  -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
+    run_cmd iptables -A OUTPUT -p tcp --dport 443 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
+    run_cmd iptables -A OUTPUT -p udp --dport 123 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
+    run_cmd iptables -A OUTPUT -p icmp            -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
+
+    # Inbound return traffic (stateful) – restrict to expected source ports/protocols
+    run_cmd iptables -A INPUT -p udp --sport 53  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    run_cmd iptables -A INPUT -p tcp --sport 53  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    run_cmd iptables -A INPUT -p tcp -m multiport --sports 80,443 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    run_cmd iptables -A INPUT -p udp --sport 123 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    run_cmd iptables -A INPUT -p icmp            -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  fi
+
+  # Logging for drops (packet-level “failed network requests”)
+  run_cmd_warn iptables -A INPUT  -m limit --limit 10/min --limit-burst 20 \
+    -j LOG --log-prefix "$LOG_PREFIX_IN" --log-level 4
+  run_cmd_warn iptables -A OUTPUT -m limit --limit 10/min --limit-burst 20 \
+    -j LOG --log-prefix "$LOG_PREFIX_OUT" --log-level 4
+
+  # Default deny
+  run_cmd iptables -P INPUT DROP
+  run_cmd iptables -P FORWARD DROP
+  run_cmd iptables -P OUTPUT DROP
+
+  echo "[INFO] Denied packet logging enabled (kernel log)."
+  echo "      Watch: journalctl -k -f | grep 'GO_DARK_'   (or: dmesg -w)"
   start_safety_net iptables
   return 0
 }
 
+# ---------------- LINUX: NFTABLES ----------------
 apply_nft() {
-  echo "[INFO] Using nftables."
+  echo "[INFO] Backend: nftables"
 
-  nft flush ruleset
+  run_cmd nft flush ruleset
 
-  nft add table inet filter
-  nft add chain inet filter input { type filter hook input priority 0 \; policy drop \; }
-  nft add chain inet filter forward { type filter hook forward priority 0 \; policy drop \; }
-  nft add chain inet filter output { type filter hook output priority 0 \; policy accept \; }
+  run_cmd nft add table inet filter
+  run_cmd sh -c 'nft add chain inet filter input   { type filter hook input priority 0 ; policy drop ; }'
+  run_cmd sh -c 'nft add chain inet filter forward { type filter hook forward priority 0 ; policy drop ; }'
+  run_cmd sh -c 'nft add chain inet filter output  { type filter hook output priority 0 ; policy drop ; }'
 
-  nft add rule inet filter input iif lo accept
-  nft add rule inet filter input ct state established,related accept
+  # Loopback (stateless)
+  run_cmd nft add rule inet filter input  iif lo accept
+  run_cmd nft add rule inet filter output oif lo accept
 
+  # SSH (stateless): allow both directions explicitly
   for ip in $TRUSTED_IPS_NORM; do
-    nft add rule inet filter input ip saddr "$ip" tcp dport "$SSH_PORT" accept
+    run_cmd nft add rule inet filter input  ip saddr "$ip" tcp dport "$SSH_PORT" accept
+    run_cmd nft add rule inet filter output ip daddr "$ip" tcp sport "$SSH_PORT" accept
   done
 
-  echo "Firewall is now in 'go dark' mode (nftables). SSH allowed only from trusted IPs."
+  if [ "$MODE" = "allow_internet" ]; then
+    echo "[INFO] Allowing outbound updates statefully (DNS/HTTP/HTTPS/NTP/ICMP)."
+
+    # Outbound stateful to update ports
+    run_cmd nft add rule inet filter output udp dport 53  ct state new,established accept
+    run_cmd nft add rule inet filter output tcp dport 53  ct state new,established accept
+    run_cmd nft add rule inet filter output tcp dport 80  ct state new,established accept
+    run_cmd nft add rule inet filter output tcp dport 443 ct state new,established accept
+    run_cmd nft add rule inet filter output udp dport 123 ct state new,established accept
+    run_cmd nft add rule inet filter output icmp         ct state new,established accept
+
+    # Return traffic (restricted)
+    run_cmd nft add rule inet filter input udp sport 53  ct state established,related accept
+    run_cmd nft add rule inet filter input tcp sport 53  ct state established,related accept
+    run_cmd nft add rule inet filter input tcp sport "{ 80, 443 }" ct state established,related accept
+    run_cmd nft add rule inet filter input udp sport 123 ct state established,related accept
+    run_cmd nft add rule inet filter input icmp          ct state established,related accept
+  fi
+
+  # Log drops explicitly (policy drop alone won’t log)
+  run_cmd nft add rule inet filter input  limit rate 10/minute log prefix "\"$LOG_PREFIX_IN\""  level warning drop
+  run_cmd nft add rule inet filter output limit rate 10/minute log prefix "\"$LOG_PREFIX_OUT\"" level warning drop
+
+  echo "[INFO] Denied packet logging enabled (kernel log)."
+  echo "      Watch: journalctl -k -f | grep 'GO_DARK_'   (or: dmesg -w)"
   start_safety_net nft
   return 0
 }
 
+# ---------------- BSD/DARWIN: PF ----------------
 apply_pf() {
-  echo "[INFO] Using pf (pfctl)."
+  echo "[INFO] Backend: pf (pfctl)"
 
-  PF_CONF_FILE="/tmp/pf.conf.lockdown"
-
-  # Determine likely loopback interface name for pf rules
+  PF_CONF_FILE="/tmp/pf.conf.go_dark"
   LO_IF="lo0"
   if command -v ifconfig >/dev/null 2>&1; then
-    if ! ifconfig lo0 >/dev/null 2>&1; then
-      LO_IF="lo"
-    fi
+    if ! ifconfig lo0 >/dev/null 2>&1; then LO_IF="lo"; fi
   fi
 
-  # Build: "ip1, ip2, ip3"
   TRUSTED_IPS_PF=$(printf "%s\n" "$TRUSTED_IPS" | awk 'NF{printf "%s, ", $1}' | sed 's/, $//')
+  echo "[INFO] Writing pf rules to: $PF_CONF_FILE"
 
-  cat > "$PF_CONF_FILE" << EOF
-# pf configuration for 'go dark' mode
+  if [ "$MODE" = "allow_internet" ]; then
+    cat > "$PF_CONF_FILE" << EOF
+# pf go_dark allow-internet mode
 table <trusted_ssh> { $TRUSTED_IPS_PF }
 
 set block-policy drop
 set skip on $LO_IF
 
-block in all
-pass out all keep state
-pass in proto tcp from <trusted_ssh> to any port $SSH_PORT keep state
+# Log blocks to pflog0
+block log in all
+block log out all
+
+# SSH stateless (no state) + explicit return path
+pass in  proto tcp from <trusted_ssh> to any port $SSH_PORT no state
+pass out proto tcp from any port $SSH_PORT to <trusted_ssh> no state
+
+# Outbound updates stateful
+pass out proto { udp tcp } to any port 53 keep state
+pass out proto tcp to any port { 80 443 } keep state
+pass out proto udp to any port 123 keep state
+pass out proto icmp all keep state
 EOF
+  else
+    cat > "$PF_CONF_FILE" << EOF
+# pf go_dark lockdown mode (no stateful preservation)
+table <trusted_ssh> { $TRUSTED_IPS_PF }
 
-  pfctl -f "$PF_CONF_FILE" || return 1
-  pfctl -e >/dev/null 2>&1 || true
+set block-policy drop
+set skip on $LO_IF
 
-  echo "Firewall is now in 'go dark' mode (pf). SSH allowed only from trusted IPs."
-  echo "To make permanent, copy $PF_CONF_FILE to /etc/pf.conf (and enable pf at boot as appropriate)."
+# Log blocks to pflog0
+block log in all
+block log out all
+
+# SSH stateless (no state) + explicit return path
+pass in  proto tcp from <trusted_ssh> to any port $SSH_PORT no state
+pass out proto tcp from any port $SSH_PORT to <trusted_ssh> no state
+EOF
+  fi
+
+  echo "----- BEGIN $PF_CONF_FILE -----"
+  cat "$PF_CONF_FILE"
+  echo "----- END $PF_CONF_FILE -----"
+
+  run_cmd pfctl -f "$PF_CONF_FILE"
+  run_cmd_warn pfctl -e
+
+  # IMPORTANT: drop any pre-existing stateful connections (malicious or otherwise).
+  # SSH is stateless here, so it can survive state flush.
+  run_cmd_warn pfctl -F state
+
+  echo "[INFO] pf enabled; denies logged to pflog0."
+  echo "      Watch: tcpdump -n -e -ttt -i pflog0"
   start_safety_net pf
   return 0
 }
 
+# ---------------- BSD: IPFW ----------------
 apply_ipfw() {
-  echo "[INFO] Using ipfw."
+  echo "[INFO] Backend: ipfw"
 
-  ipfw -q flush
+  run_cmd ipfw -q flush
 
-  # State handling (helps return traffic)
-  ipfw add 10 check-state
+  # Loopback (stateless)
+  run_cmd ipfw add 50 allow ip from any to any via lo0
 
-  # Allow loopback
-  ipfw add 100 allow ip from any to any via lo0
-
-  # Allow outbound
-  ipfw add 200 allow ip from me to any out keep-state
-
-  # Allow SSH only from trusted IPs
-  rule=300
+  # SSH stateless: allow both directions explicitly
+  rule=100
   for ip in $TRUSTED_IPS_NORM; do
-    ipfw add "$rule" allow tcp from "$ip" to me "$SSH_PORT" in setup keep-state
+    run_cmd ipfw add "$rule"       allow tcp from "$ip" to me "$SSH_PORT" in
+    run_cmd ipfw add "$((rule+1))" allow tcp from me "$SSH_PORT" to "$ip" out
     rule=$((rule + 10))
   done
 
-  # Default deny last
-  ipfw add 65534 deny ip from any to any
+  if [ "$MODE" = "allow_internet" ]; then
+    echo "[INFO] Allowing outbound updates statefully (DNS/HTTP/HTTPS/NTP/ICMP)."
 
-  echo "Firewall is now in 'go dark' mode (ipfw). SSH allowed only from trusted IPs."
+    # States only for update traffic
+    run_cmd ipfw add 10 check-state
+
+    run_cmd ipfw add 200 allow udp from me to any 53 out keep-state
+    run_cmd ipfw add 210 allow tcp from me to any 53 out setup keep-state
+    run_cmd ipfw add 220 allow tcp from me to any 80 out setup keep-state
+    run_cmd ipfw add 230 allow tcp from me to any 443 out setup keep-state
+    run_cmd ipfw add 240 allow udp from me to any 123 out keep-state
+    run_cmd ipfw add 250 allow icmp from me to any out keep-state
+  fi
+
+  # Deny+log everything else (packet-level “failed requests”)
+  run_cmd ipfw add 65000 deny log ip from any to any in
+  run_cmd ipfw add 65010 deny log ip from any to any out
+
+  echo "[INFO] ipfw deny logging enabled (syslog)."
+  echo "      Watch (common): tail -f /var/log/security /var/log/messages 2>/dev/null | grep -i ipfw"
   start_safety_net ipfw
   return 0
 }
 
+# ---------------- FALLBACK: TCP WRAPPERS ----------------
 apply_tcp_wrappers() {
-  echo "[WARNING] No supported kernel firewall found; falling back to TCP Wrappers."
-  echo "[INFO] This only affects services compiled with libwrap (often sshd on older systems)."
+  echo "[WARN] No supported kernel firewall found; falling back to TCP Wrappers."
+  echo "[WARN] This may not affect sshd on modern systems; packet-level deny logging not available here."
 
-  [ -f /etc/hosts.deny ]  && cp /etc/hosts.deny  /etc/hosts.deny.bak."$(date +%s)"
-  [ -f /etc/hosts.allow ] && cp /etc/hosts.allow /etc/hosts.allow.bak."$(date +%s)"
-  echo "[INFO] Backups of /etc/hosts.deny and /etc/hosts.allow created (if files existed)."
+  [ -f /etc/hosts.deny ]  && run_cmd cp /etc/hosts.deny  /etc/hosts.deny.bak."$(date +%s)"
+  [ -f /etc/hosts.allow ] && run_cmd cp /etc/hosts.allow /etc/hosts.allow.bak."$(date +%s)"
 
-  echo "ALL: ALL" > /etc/hosts.deny
-  echo "sshd: $TRUSTED_IPS_NORM" > /etc/hosts.allow
-
-  echo "TCP Wrappers configured. SSH should be allowed only from trusted IPs."
+  run_cmd sh -c 'echo "ALL: ALL" > /etc/hosts.deny'
+  run_cmd sh -c "echo \"sshd: $TRUSTED_IPS_NORM\" > /etc/hosts.allow"
   return 0
 }
 
-# --- MAIN ---
-
-TRUSTED_IPS_NORM=$(norm_ip_list "$TRUSTED_IPS")
-
-if [ -z "$TRUSTED_IPS_NORM" ]; then
-  echo "No trusted IPs configured. Edit TRUSTED_IPS in the script."
-  exit 1
-fi
-
-for ip in $TRUSTED_IPS_NORM; do
-  if ! validate_ipv4 "$ip"; then
-    echo "Invalid IP address in TRUSTED_IPS: $ip"
-    exit 1
-  fi
-done
-
-echo "WARNING: In 10 seconds, the system will be locked down."
-echo "You will only be able to connect via SSH on port $SSH_PORT from:"
-print_trusted_ips
-echo "Press Ctrl+C to abort."
-sleep 10
-
+# ---------------- MAIN DISPATCH ----------------
 OS=$(uname -s 2>/dev/null || echo unknown)
 
 case "$OS" in
@@ -270,20 +395,13 @@ case "$OS" in
     fi
     ;;
   *)
-    # Unknown OS: fall back to “best guess” by command availability
-    if command -v pfctl >/dev/null 2>&1; then
-      apply_pf && exit 0
-    elif command -v ipfw >/dev/null 2>&1; then
-      apply_ipfw && exit 0
-    elif command -v iptables >/dev/null 2>&1; then
-      apply_iptables && exit 0
-    elif command -v nft >/dev/null 2>&1; then
-      apply_nft && exit 0
-    else
-      apply_tcp_wrappers && exit 0
-    fi
+    if command -v pfctl >/dev/null 2>&1; then apply_pf && exit 0; fi
+    if command -v ipfw >/dev/null 2>&1; then apply_ipfw && exit 0; fi
+    if command -v iptables >/dev/null 2>&1; then apply_iptables && exit 0; fi
+    if command -v nft >/dev/null 2>&1; then apply_nft && exit 0; fi
+    apply_tcp_wrappers && exit 0
     ;;
 esac
 
-echo "Unexpected error: no backend applied."
+echo "ERROR: unexpected failure."
 exit 1
