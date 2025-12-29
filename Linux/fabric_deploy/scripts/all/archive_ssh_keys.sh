@@ -40,11 +40,26 @@ archive_alpine() {
     [ -n "$user" ] || continue
     [ -d "$home" ] || continue
 
+    safe_home="$(printf '%s' "$home" | sed 's,/,_,g; s,^_,,')"
+
+    # Archive authorized_keys
     ak="$home/.ssh/authorized_keys"
     if [ -f "$ak" ]; then
-      safe_home="$(printf '%s' "$home" | sed 's,/,_,g; s,^_,,')"
       out="$DEST/${user}__${safe_home}__authorized_keys"
       copy_one "$ak" "$out"
+    fi
+
+    # Archive per-user host trust files (legacy security risks)
+    shosts="$home/.ssh/shosts"
+    if [ -f "$shosts" ]; then
+      out="$DEST/${user}__${safe_home}__shosts"
+      copy_one "$shosts" "$out"
+    fi
+
+    shosts_equiv="$home/.ssh/shosts.equiv"
+    if [ -f "$shosts_equiv" ]; then
+      out="$DEST/${user}__${safe_home}__shosts.equiv"
+      copy_one "$shosts_equiv" "$out"
     fi
   done < /etc/passwd
 }
@@ -56,22 +71,54 @@ archive_non_alpine() {
     getent passwd | while IFS=: read -r user _ uid gid gecos home shell; do
       [ -n "$user" ] || continue
       [ -d "$home" ] || continue
+
+      safe_home="$(printf '%s' "$home" | sed 's,/,_,g; s,^_,,')"
+
+      # Archive authorized_keys
       ak="$home/.ssh/authorized_keys"
       if [ -f "$ak" ]; then
-        safe_home="$(printf '%s' "$home" | sed 's,/,_,g; s,^_,,')"
         out="$DEST/${user}__${safe_home}__authorized_keys"
         copy_one "$ak" "$out"
+      fi
+
+      # Archive per-user host trust files (legacy security risks)
+      shosts="$home/.ssh/shosts"
+      if [ -f "$shosts" ]; then
+        out="$DEST/${user}__${safe_home}__shosts"
+        copy_one "$shosts" "$out"
+      fi
+
+      shosts_equiv="$home/.ssh/shosts.equiv"
+      if [ -f "$shosts_equiv" ]; then
+        out="$DEST/${user}__${safe_home}__shosts.equiv"
+        copy_one "$shosts_equiv" "$out"
       fi
     done
   else
     while IFS=: read -r user _ uid gid gecos home shell; do
       [ -n "$user" ] || continue
       [ -d "$home" ] || continue
+
+      safe_home="$(printf '%s' "$home" | sed 's,/,_,g; s,^_,,')"
+
+      # Archive authorized_keys
       ak="$home/.ssh/authorized_keys"
       if [ -f "$ak" ]; then
-        safe_home="$(printf '%s' "$home" | sed 's,/,_,g; s,^_,,')"
         out="$DEST/${user}__${safe_home}__authorized_keys"
         copy_one "$ak" "$out"
+      fi
+
+      # Archive per-user host trust files (legacy security risks)
+      shosts="$home/.ssh/shosts"
+      if [ -f "$shosts" ]; then
+        out="$DEST/${user}__${safe_home}__shosts"
+        copy_one "$shosts" "$out"
+      fi
+
+      shosts_equiv="$home/.ssh/shosts.equiv"
+      if [ -f "$shosts_equiv" ]; then
+        out="$DEST/${user}__${safe_home}__shosts.equiv"
+        copy_one "$shosts_equiv" "$out"
       fi
     done < /etc/passwd
   fi
