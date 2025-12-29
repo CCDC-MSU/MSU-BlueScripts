@@ -92,10 +92,12 @@ The standard operating procedure for the Competition:
 
 2.  **Initial Discovery**:
     - Run `fab discover-all`.
+    - Populate the class `ServerInfo` with the discovered data to be used by the hardening modules.
     - Review `discovery_*.json` and logs to understand the battlefield.
 
 3.  **Snapshot & Lockdown**:
     - Run `fab run-script scripts/all/pre-hardening-snapshot.sh` (Save state).
+    - Run the module to install and make sure the firewall is working.
     - Run `fab run-script scripts/all/lockdown.sh` (Stop the bleeding).
 
 4.  **Hardening Execution**:
@@ -113,6 +115,8 @@ The standard operating procedure for the Competition:
     - Operator checks `logs/reports/` for failures.
     - Operator verifies authorized access (SSH).
     - Team members take over refined/hardened hosts.
+
+The setup should be such that the operator only runs fab harden and the rest is handled automatically.
 
 ## 5. Development Roadmap & Status
 
