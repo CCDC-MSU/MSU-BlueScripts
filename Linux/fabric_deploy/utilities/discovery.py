@@ -58,6 +58,7 @@ class SystemDiscovery:
             ("user management commands", self._discover_available_commands),
             ("basic system info", self._discover_basic_info),
             ("operating system", self._discover_os_info),
+            ("init system", self._discover_init_system),
             ("users", self._discover_users),
             ("groups", self._discover_groups),
             ("sudoers", self._discover_sudoers_group),
@@ -108,6 +109,9 @@ class SystemDiscovery:
                         f"family={self._os_family!r}"
                     )
                 return f"os_info=None, family={self._os_family!r}"
+
+            if task_name == "init system":
+                return f"init={getattr(self.server_info, 'init_system', 'unknown')!r}"
 
             if task_name == "users":
                 users = getattr(self.server_info, "users", []) or []
@@ -347,6 +351,46 @@ class SystemDiscovery:
                 elif 'bsd' in uname:
                     os_info.distro = "BSD"
                     self._os_family = OSFamily.FREEBSD.value
+
+    def _discover_init_system(self):
+        """Discover the init system (systemd, sysvinit, openrc, etc.)"""
+        init_system = "unknown"
+
+        # Strategy 1: Check PID 1 Name
+        # Linux kernels expose command of PID 1 in /proc/1/comm
+        res = self._run_command("cat /proc/1/comm 2>/dev/null")
+        if res.success and res.output.strip():
+            pid1_name = res.output.strip()
+            if pid1_name == "systemd":
+                init_system = "systemd"
+            elif pid1_name == "init":
+                # Could be sysvinit, openrc, upstart, etc. check further
+                pass
+            else:
+                init_system = pid1_name  # e.g., "runit", "s6"
+
+        # Strategy 2: If found "init" or unknown, verify with specific checks
+        if init_system in ["unknown", "init"]:
+            # Check systemd directory/command
+            if self._run_command("test -d /run/systemd/system").success:
+                 init_system = "systemd"
+            elif self._run_command("command -v systemctl").success:
+                 # fallback check, though some non-systemd distros might have a shim
+                 init_system = "systemd"
+            
+            # Check OpenRC
+            elif self._run_command("test -d /run/openrc").success or self._run_command("command -v rc-status").success:
+                init_system = "openrc"
+            
+            # Check SysVinit (inittab usually exists)
+            elif self._run_command("test -f /etc/inittab").success:
+                init_system = "sysvinit"
+                
+            # BSD checks
+            elif self._os_family in [OSFamily.FREEBSD.value, OSFamily.OPENBSD.value, OSFamily.NETBSD.value, OSFamily.BSDGENERIC.value]:
+                init_system = "bsd"
+
+        self.server_info.init_system = init_system
 
     def _test_valid_user(self, username) -> bool:
         """ test if the user has a valid shell by trying to su to it """

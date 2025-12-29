@@ -91,6 +91,7 @@ class ServerInfo:
 
     # OS Information
     os: OSInfo = field(default_factory=OSInfo)
+    init_system: str = 'unknown'
     package_managers: List[str] = field(default_factory=list)
 
     # User Information  
@@ -203,6 +204,8 @@ class ServerInfo:
         os_line = f"{self.os.distro} {self.os.version} ({self.os.architecture})"
         if self.os.kernel and self.os.kernel != "unknown":
             os_line += f" | kernel {self.os.kernel}"
+        if self.init_system and self.init_system != "unknown":
+            os_line += f" | init: {self.init_system}"
 
         # Users
         regular_names = sorted(self.regular_usernames)

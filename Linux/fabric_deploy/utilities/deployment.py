@@ -22,6 +22,60 @@ from .modules import (
     BashScriptHardeningModule,
     UserHardeningModule,
 )
+from dataclasses import dataclass, field
+import time
+
+
+@dataclass
+class PipelineStep:
+    type: str  # 'module', 'script', 'action'
+    target: str  # Module name, script path, or action name
+    args: Dict = field(default_factory=dict)  # Optional arguments
+
+# Define the default hardening pipeline
+DEFAULT_PIPELINE = [
+    # 1. Snapshot
+    PipelineStep('script', 'scripts/all/pre-hardening-snapshot.sh'),
+    
+    # 2. Discovery (Ensure we have fresh facts)
+    PipelineStep('action', 'discovery'),
+    
+    # 3. User Hardening (Passwords)
+    PipelineStep('module', 'user_hardening'),
+    
+    # 4. Firewall (Install/Enable)
+    PipelineStep('module', 'firewall_hardening'),
+    
+    # 5. Lockdown (Panic Button)
+    PipelineStep('script', 'scripts/all/lockdown.sh'),
+    
+    # 6. SSH Hardening
+    PipelineStep('module', 'ssh_hardening'),
+
+    # 7. Run any additional custom scripts
+    PipelineStep('module', 'bash_scripts'),
+    
+    # 8. Reboot (Clean slate)
+    PipelineStep('action', 'reboot'),
+    
+    # 9. Discovery (Refresh facts after reboot)
+    PipelineStep('action', 'discovery'),
+
+    # 10. User Hardening (Rotate again)
+    PipelineStep('module', 'user_hardening'),
+    
+    # 11. Allow Internet (via lockdown script)
+    PipelineStep('script', 'scripts/all/lockdown.sh', args={'env': {'ALLOW_INTERNET': '1'}, 'args': '--allow-internet'}),
+    
+    # 12. Packages & Tools
+    PipelineStep('module', 'package_installer'),
+    
+    # 13. Logging
+    PipelineStep('module', 'logging_setup'),
+    
+    # 14. Final Snapshot
+    PipelineStep('script', 'scripts/all/pre-hardening-snapshot.sh'),
+]
 
 logger = logging.getLogger(__name__)
 
@@ -30,16 +84,18 @@ class HardeningOrchestrator:
     """Orchestrates the hardening process"""
     
     def __init__(self, connection: Connection, server_info: ServerInfo, os_family: str, 
-                 script_paths: Optional[List[str]] = None):
+                 script_paths: Optional[List[str]] = None,
+                 pipeline: Optional[List[PipelineStep]] = None):
         self.conn = connection
         self.server_info = server_info
         self.os_family = os_family
         self.script_paths = script_paths
-        self.modules = self._initialize_modules()
+        self.modules_map = self._initialize_modules_map()
+        self.pipeline = pipeline or DEFAULT_PIPELINE
     
-    def _initialize_modules(self) -> List[HardeningModule]:
-        """Initialize all hardening modules"""
-        return [
+    def _initialize_modules_map(self) -> Dict[str, HardeningModule]:
+        """Initialize all hardening modules and return map"""
+        modules = [
             AgentAccountModule(self.conn, self.server_info, self.os_family),
             PackageInstallerModule(self.conn, self.server_info, self.os_family),
             LoggingSetupModule(self.conn, self.server_info, self.os_family),
@@ -50,43 +106,238 @@ class HardeningOrchestrator:
             BashScriptHardeningModule(self.conn, self.server_info, self.os_family, 
                                     script_paths=self.script_paths),
         ]
+        return {m.get_name(): m for m in modules}
     
     def get_applicable_modules(self) -> List[HardeningModule]:
         """Get list of applicable modules for this system"""
-        return [m for m in self.modules if m.is_applicable()]
+        return [m for m in self.modules_map.values() if m.is_applicable()]
     
     def apply_module(self, module_name: str, dry_run: bool = False) -> List[HardeningResult]:
         """Apply a specific hardening module"""
-        for module in self.modules:
-            if module.get_name() == module_name:
-                return module.apply_all(dry_run=dry_run)
-        raise ValueError(f"Module {module_name} not found")
+        if module_name not in self.modules_map:
+             raise ValueError(f"Module {module_name} not found")
+        return self.modules_map[module_name].apply_all(dry_run=dry_run)
     
     def apply_all(self, dry_run: bool = False, 
                   modules: Optional[List[str]] = None) -> Dict[str, List[HardeningResult]]:
         """
-        Apply all or selected hardening modules
+        Apply all or selected hardening modules/steps
         
         Args:
             dry_run: If True, only show what would be done
-            modules: List of module names to apply (None = all applicable)
+            modules: List of module names to apply (None = use pipeline)
             
         Returns:
-            Dictionary mapping module names to their results
+            Dictionary mapping step names to their results
         """
         results = {}
-        applicable_modules = self.get_applicable_modules()
         
-        # Filter modules if specific ones requested
+        # If specific modules requested, ignore pipeline and run them directly
         if modules:
-            applicable_modules = [m for m in applicable_modules if m.get_name() in modules]
+            for mod_name in modules:
+                if mod_name in self.modules_map:
+                    logger.info(f"\nApplying module (selective): {mod_name}")
+                    results[mod_name] = self.modules_map[mod_name].apply_all(dry_run=dry_run)
+                else:
+                    logger.warning(f"Module {mod_name} not found, skipping")
+            return results
         
-        for module in applicable_modules:
-            logger.info(f"\nApplying module: {module.get_name()}")
-            results[module.get_name()] = module.apply_all(dry_run=dry_run)
-        
+        # Otherwise execute pipeline
+        for i, step in enumerate(self.pipeline):
+            step_id = f"{i+1}_{step.type}_{Path(step.target).name}"
+            logger.info(f"\n--- Pipeline Step {i+1}: {step.type.upper()} {step.target} ---")
+            
+            step_results = []
+            try:
+                if step.type == 'module':
+                    step_results = self._execute_module_step(step, dry_run)
+                    # Use module name as key to keep summary working nicely, or step_id?
+                    # If we run same module twice, we need unique keys for results dict?
+                    # The get_summary method iterates results.items().
+                    # Let's append to existing results if key exists?
+                    key = step.target
+                    if key in results:
+                        results[key].extend(step_results)
+                    else:
+                        results[key] = step_results
+                        
+                elif step.type == 'script':
+                    step_results = self._execute_script_step(step, dry_run)
+                    results[step_id] = step_results
+                    
+                elif step.type == 'action':
+                    step_results = self._execute_action_step(step, dry_run)
+                    results[step_id] = step_results
+                    
+            except Exception as e:
+                logger.error(f"Step {step_id} failed: {e}")
+                results[step_id] = [HardeningResult(
+                    success=False,
+                    command=step.target,
+                    description=f"Pipeline step {step_id}",
+                    error=str(e)
+                )]
+                
         return results
-    
+
+    def _execute_module_step(self, step: PipelineStep, dry_run: bool) -> List[HardeningResult]:
+        if step.target not in self.modules_map:
+            logger.warning(f"Module {step.target} not found")
+            return []
+        return self.modules_map[step.target].apply_all(dry_run=dry_run)
+
+    def _execute_script_step(self, step: PipelineStep, dry_run: bool) -> List[HardeningResult]:
+        """Execute a standalone script execution step"""
+        # We can leverage BashScriptHardeningModule logic or implement custom
+        # For now, let's try to use BashScriptHardeningModule's helper if we can access it
+        # Or simpler: create a temporary BashScriptHardeningModule?
+        
+        script_path = step.target
+        # Handle arguments if any
+        # args might have 'env' or 'args'
+        
+        # To avoid duplicating logic, let's manually construct the commands 
+        # normally found in BashScriptHardeningModule but for one script
+        
+        # Determine local script path
+        # Assume relative to scripts root if not absolute
+        if Path(script_path).is_absolute():
+            local_path = Path(script_path)
+        else:
+            # Assume relative to repo root or scripts dir? 
+            # Default pipeline uses 'scripts/all/...' which is relative to repo root
+            # But BashScriptHardeningModule uses self.scripts_base_path = Path(__file__).parent.parent.parent / "scripts"
+            # Actually, looking at file structure:
+            # fabric_deploy/utilities/deployment.py
+            # fabric_deploy/scripts/all/...
+            # So root is fabric_deploy which is parent.parent
+            repo_root = Path(__file__).parent.parent
+            local_path = repo_root / script_path
+            
+        if not local_path.exists():
+            return [HardeningResult(False, script_path, "Load Script", error=f"File not found: {local_path}")]
+
+        # Reuse the existing bash module logic by temporarily instantiating one with this single script?
+        # But we need to handle special args (like --allow-internet).
+        # BashScriptHardeningModule doesn't support args per script yet.
+        
+        # Let's implement basic upload & run here
+        results = []
+        remote_path = f"/tmp/ccdc_step_{Path(script_path).name}"
+        log_path = f"/root/hardening-logs/step_{Path(script_path).name}.log"
+        
+        if dry_run:
+            return [HardeningResult(True, f"bash {script_path}", "Dry Run Script Execution")]
+
+        try:
+            # 1. Upload
+            self.conn.put(local_path, remote_path)
+            self.conn.sudo(f"chmod +x {remote_path}")
+            
+            # 2. Execute
+            cmd = f"bash {remote_path}"
+            extra_args = step.args.get('args', '')
+            if extra_args:
+                cmd += f" {extra_args}"
+                
+            env_vars = step.args.get('env', {})
+            env_str = ' '.join([f"{k}={v}" for k,v in env_vars.items()])
+            if env_str:
+                cmd = f"{env_str} {cmd}"
+            
+            # Run with logging
+            # Use a slightly different command structure than module to ensure we capture output
+            full_cmd = f"mkdir -p /root/hardening-logs && {cmd} 2>&1 | tee {log_path}"
+            
+            logger.info(f"Running script: {full_cmd}")
+            res = self.conn.sudo(full_cmd, warn=True, timeout=300)
+            
+            results.append(HardeningResult(
+                success=res.ok,
+                command=cmd,
+                description=f"Run script {Path(script_path).name}",
+                output=res.stdout,
+                error=res.stderr if not res.ok else None
+            ))
+            
+            # Cleanup
+            self.conn.sudo(f"rm -f {remote_path}")
+            
+        except Exception as e:
+            results.append(HardeningResult(False, script_path, "Execute Script", error=str(e)))
+            
+        return results
+
+    def _execute_action_step(self, step: PipelineStep, dry_run: bool) -> List[HardeningResult]:
+        action = step.target
+        if action == 'reboot':
+            if dry_run:
+                 return [HardeningResult(True, "reboot", "System Reboot (Dry Run)")]
+            try:
+                logger.info("Rebooting system...")
+                self.conn.sudo("reboot", warn=True)
+                # Fabric doesn't automatically wait for reboot?
+                # We need to wait for disconnect and then reconnect
+                logger.info("Waiting for system to go down...")
+                time.sleep(5) # Give it a moment to start shutting down
+                
+                # Re-establish connection?
+                # deployment.py is usually called within a 'with Connection()'.
+                # restarting the connection object is tricky if we don't own it.
+                # However, we can try to wait for it to come back using a loop?
+                logger.info("Waiting for system to come back (30s)...")
+                time.sleep(30) # Primitive wait
+                # TODO: Implement robust wait_for_ssh logic
+                # For now assume it comes back or we fail subsequent steps?
+                # Ideally we should verify connectivity
+                self.conn.run("hostname") # Trigger reconnection attempt?
+                return [HardeningResult(True, "reboot", "System Reboot")]
+                
+            except Exception as e:
+                # Reboot usually causes an exception on the command execution
+                # We might want to suppress it if it's "Connection closed"
+                logger.warning(f"Reboot triggered exception (expected): {e}")
+                
+                 # Try to reconnect
+                try:
+                    time.sleep(10)
+                    self.conn.open()
+                    return [HardeningResult(True, "reboot", "System Reboot (Reconnected)")]
+                except:
+                    pass
+                return [HardeningResult(True, "reboot", "System Reboot (Triggered)")]
+
+        elif action == 'discovery':
+            if dry_run:
+                 return [HardeningResult(True, "discovery", "System Discovery (Dry Run)")]
+            try:
+                # Re-run discovery
+                from .discovery import SystemDiscovery
+                logger.info("Re-running system discovery...")
+                discovery = SystemDiscovery(self.conn, self.server_info.credentials) # use creds from server_info?
+                # Need credentials. server_info has them?
+                # server_info has .credentials field? Yes, looking at models.py
+                new_info = discovery.discover_system()
+                # Update our server_info reference!
+                # Shallow copy attributes?
+                # self.server_info is a reference, if we update it, it reflects everywhere?
+                # But discover_system returns a NEW object usually.
+                # We should update self.server_info in place if possible or update self.server_info ref
+                self.server_info = new_info
+                # Also need to update modules with new info?
+                # Yes, modules hold reference to server_info.
+                # If we replaced the object, we need to update modules.
+                # But modules where initialized with OLD server_info.
+                # We need to re-initialize modules map or update their server_info.
+                for mod in self.modules_map.values():
+                    mod.server_info = new_info
+                
+                return [HardeningResult(True, "discovery", "System Discovery (Refreshed)")]
+            except Exception as e:
+                return [HardeningResult(False, "discovery", "System Discovery", error=str(e))]
+        
+        return [HardeningResult(False, action, "Unknown Action")]
+
     def get_summary(self, results: Dict[str, List[HardeningResult]]) -> str:
         """Generate a summary of hardening results"""
         summary_lines = ["Hardening Summary", "=" * 50]
@@ -142,9 +393,7 @@ class HardeningDeployer:
         if dry_run:
             logger.info("DRY RUN MODE - No changes will be made")
         
-        # Create orchestrator (using refactored BashScriptHardeningModule)
-        # We pass script_paths directly to the Bash module via constructor args hack or we update Orchestrator
-        # Let's update Orchestrator first
+        # We pass script_paths arguments to be available for 'bash_scripts' module in the pipeline
         orchestrator = HardeningOrchestrator(self.conn, self.server_info, self.os_family,
                                            script_paths=script_paths)
         
