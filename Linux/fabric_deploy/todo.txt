@@ -26,3 +26,29 @@ ss -tulpn (or netstat -tulpn)
 systemctl --failed (if systemd)
 crontab -l + check cron service / timers
 Disk health: smartctl -H / nvme smart-log (if tools installed)
+
+====== important =====
+add init system discovery to discovery
+fix sshd restart based on init system
+    /etc/rc.d/rc.sshd restart   <- slackware
+    rc-service sshd restart     <- rc based systems
+
+==== simplification ===
+replace setup agent module with an extention to the users module    (might want to add a ssh key to the root and hardening user)
+
+
+==== improve ====
+lockdown.sh
+    update lockdown to allow any port from trusted ips
+
+ssh_hardening.py
+    improve recovery from bad ssh configs, instead of relying on current ssh connection to run commands to revert the change, run a command like this:
+    nohup:
+        print pid
+        sleep(60)
+        revert command
+        restart sshd
+    capture the pid an on connection test success kill pid
+
+user_hardening.py
+    have user hardening implant ssh keys for users
