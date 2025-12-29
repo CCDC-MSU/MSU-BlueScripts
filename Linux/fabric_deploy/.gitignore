@@ -3,3 +3,4 @@ script_outputs/
 .venv/
 logs
 .scratch
+keys/*
