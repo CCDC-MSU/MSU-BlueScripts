@@ -1,16 +1,22 @@
-# Secure php.ini files
+#!/bin/sh
+# Secure php.ini files (POSIX sh, safe for spaces)
 
-for ini in $(find / -name "php.ini" 2>/dev/null); do
-	echo "[+] Writing php.ini options to $ini..."
-	echo "disable_functions = shell_exec, exec, passthru, proc_open, popen, system, phpinfo" >> $ini
-	echo "max_execution_time = 3" >> $ini
-	echo "register_globals = off" >> $ini
-	echo "magic_quotes_gpc = on" >> $ini
-	echo "allow_url_fopen = off" >> $ini
-	echo "allow_url_include = off" >> $ini
-	echo "display_errors = off" >> $ini
-	echo "short_open_tag = off" >> $ini
-	echo "session.cookie_httponly = 1" >> $ini
-	echo "session.use_only_cookies = 1" >> $ini
-	echo "session.cookie_secure = 1" >> $ini
-done
+sudo find / -type f -name 'php.ini' 2>/dev/null -exec sh -c '
+  for ini do
+    echo "[+] Writing php.ini options to $ini..."
+
+    {
+      echo "disable_functions = shell_exec, exec, passthru, proc_open, popen, system, phpinfo"
+      echo "max_execution_time = 3"
+      echo "register_globals = off"
+      echo "magic_quotes_gpc = on"
+      echo "allow_url_fopen = off"
+      echo "allow_url_include = off"
+      echo "display_errors = off"
+      echo "short_open_tag = off"
+      echo "session.cookie_httponly = 1"
+      echo "session.use_only_cookies = 1"
+      echo "session.cookie_secure = 1"
+    } >> "$ini"
+  done
+' sh {} +

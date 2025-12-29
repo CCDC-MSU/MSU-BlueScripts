@@ -19,7 +19,6 @@ from .modules import (
     SSHHardeningModule,
     KernelHardeningModule, 
     FirewallHardeningModule,
-    ServiceHardeningModule,
     BashScriptHardeningModule,
     UserHardeningModule,
 )
@@ -47,7 +46,6 @@ class HardeningOrchestrator:
             SSHHardeningModule(self.conn, self.server_info, self.os_family),
             KernelHardeningModule(self.conn, self.server_info, self.os_family),
             FirewallHardeningModule(self.conn, self.server_info, self.os_family),
-            ServiceHardeningModule(self.conn, self.server_info, self.os_family),
             UserHardeningModule(self.conn, self.server_info, self.os_family),
             BashScriptHardeningModule(self.conn, self.server_info, self.os_family, 
                                     script_paths=self.script_paths),

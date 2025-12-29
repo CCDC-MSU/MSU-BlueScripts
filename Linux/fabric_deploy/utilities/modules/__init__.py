@@ -9,7 +9,6 @@ from .logging_setup import LoggingSetupModule
 from .ssh_hardening import SSHHardeningModule
 from .kernel_hardening import KernelHardeningModule
 from .firewall_hardening import FirewallHardeningModule
-from .service_hardening import ServiceHardeningModule
 from .bash_scripts import BashScriptHardeningModule
 from .user_hardening import UserHardeningModule
 
@@ -26,7 +25,6 @@ __all__ = [
     'SSHHardeningModule',
     'KernelHardeningModule', 
     'FirewallHardeningModule',
-    'ServiceHardeningModule',
     'BashScriptHardeningModule',
     'UserHardeningModule',
 ]
