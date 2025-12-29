@@ -38,11 +38,7 @@ class UserHardeningModule(HardeningModule):
         self.users_config = self._ensure_passwords_loaded()
         self.required_regular_users = self._get_user_set("regular_users")
         self.required_super_users = self._get_user_set("super_users")
-        self.do_not_change_users = self._get_user_set(
-            "dontchange_accounts",
-            "do_not_change_accounts",
-            "do_not_change_users",
-        )
+        self.do_not_change_users = self._get_user_set("do_not_change_users")
         overlap = self.required_regular_users & self.required_super_users
         if overlap:
             logger.warning(
@@ -77,7 +73,7 @@ class UserHardeningModule(HardeningModule):
         return {
             "regular_users": {},
             "super_users": {},
-            "dontchange_accounts": {
+            "do_not_change_users": {
                 "root": "system account",
                 "scan-agent": "do not change",
             },
