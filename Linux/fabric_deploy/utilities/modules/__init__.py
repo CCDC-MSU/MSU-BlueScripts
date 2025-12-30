@@ -7,7 +7,6 @@ from .agent_account import AgentAccountModule
 from .package_installer import PackageInstallerModule
 from .logging_setup import LoggingSetupModule
 from .ssh_hardening import SSHHardeningModule
-from .kernel_hardening import KernelHardeningModule
 from .firewall_hardening import FirewallHardeningModule
 from .bash_scripts import BashScriptHardeningModule
 from .user_hardening import UserHardeningModule
@@ -23,7 +22,6 @@ __all__ = [
     'PackageInstallerModule',
     'LoggingSetupModule',
     'SSHHardeningModule',
-    'KernelHardeningModule', 
     'FirewallHardeningModule',
     'BashScriptHardeningModule',
     'UserHardeningModule',

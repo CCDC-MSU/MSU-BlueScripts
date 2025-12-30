@@ -62,7 +62,7 @@ To run *only* this module (e.g., to fix broken users):
 fab test-module --module=user_hardening --live
 ```
 
-## ⚠️ Important Considerations
+## Important Considerations
 
 1.  **Do Not Lock Out The Scoring Engine**: Use `do_not_change_users` for any account required by the competition (check your packet!).
 2.  **Root Access**: The script sets `root` access via SSH key. You should use `ssh -i keys/test-root-key.private root@<host>` if the password fails.
