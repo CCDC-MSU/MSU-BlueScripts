@@ -127,6 +127,9 @@ class ServerInfo:
     # Discovery Status
     discovery_successful: bool = False
     discovery_errors: List[str] = field(default_factory=list)
+    
+    # State flags
+    safe_to_reboot: bool = False
 
     @property
     def regular_users(self) -> List[UserInfo]:

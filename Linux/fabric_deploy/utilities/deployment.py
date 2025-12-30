@@ -271,6 +271,12 @@ class HardeningOrchestrator:
         if action == 'reboot':
             if dry_run:
                  return [HardeningResult(True, "reboot", "System Reboot (Dry Run)")]
+            
+            # Safety Check
+            if not getattr(self.server_info, 'safe_to_reboot', False):
+                logger.error("Skipping reboot: Safe-to-reboot signal was not received (SSH hardening may have failed or not completed)")
+                return [HardeningResult(False, "reboot", "Safeguard: Reboot Skipped", error="safe_to_reboot flag is False")]
+
             try:
                 logger.info("Rebooting system...")
                 self.conn.sudo("reboot", warn=True)
