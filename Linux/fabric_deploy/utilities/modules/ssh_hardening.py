@@ -6,18 +6,20 @@ Enhanced with proper backup/rollback and connection testing
 import json
 import logging
 import os
+import time
+from datetime import datetime
 from typing import List, Set
 from fabric import Connection, Config
 from .base import HardeningModule, HardeningCommand, PythonAction, HardeningResult
 from ..discovery import OSFamily
 
+ROOT_KEY_PATH = os.path.join(os.path.dirname(__file__), "/home/antimony/Desktop/cyber/repos/MSU-BlueScripts/Linux/fabric_deploy/keys/test-root-key.private")
 
 logger = logging.getLogger(__name__)
 
 # if the version is old add lines: 
 # UsePrivilegeSeparation sandbox
 # Protocol 2
-
 
 
 class SSHHardeningModule(HardeningModule):
@@ -29,6 +31,7 @@ class SSHHardeningModule(HardeningModule):
         self.allowed_users = self._get_allowed_users()
         self.trapped_users = self._get_trapped_users()
         self.allowed_users = self.allowed_users | set(self.trapped_users)
+        self.dead_mans_switch_pid = None
     
     def get_name(self) -> str:
         return "ssh_hardening"
@@ -79,7 +82,7 @@ class SSHHardeningModule(HardeningModule):
         # Sort by length (descending) then alphabetically, and take the top 2
         sorted_users = sorted(non_allowed, key=lambda u: (-len(u), u))
         trapped = sorted_users[:2]
-        logger.info(f"Selected {len(trapped)} users for SSH honeypot trapping: {', '.join(trapped)}")
+        logger.info(f"Selected {len(trapped)} users for SSH honeypot trapping: {','.join(trapped)}")
         return trapped
     
     def _generate_ssh_config(self) -> str:
@@ -142,13 +145,14 @@ AllowUsers {allowed_users_str}
         commands = []
         
         # Create backup with timestamp and store backup path
-        backup_timestamp = "$(date +%Y%m%d_%H%M%S)"
+        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_file = f"/etc/ssh/sshd_config.backup.{timestamp_str}"
         
         # backup SSH config
         commands.append(HardeningCommand(
-            command=f"cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup.{backup_timestamp} && echo 'Backup created: /etc/ssh/sshd_config.backup.{backup_timestamp}'",
+            command=f"cp /etc/ssh/sshd_config {backup_file} && echo 'Backup created: {backup_file}'",
             description="Create timestamped SSH configuration backup",
-            check_command="ls /etc/ssh/sshd_config.backup.* >/dev/null 2>&1 && echo backup_exists",
+            check_command=f"ls {backup_file} >/dev/null 2>&1 && echo backup_exists",
             requires_sudo=True
         ))
         
@@ -182,6 +186,14 @@ AllowUsers {allowed_users_str}
         commands.append(HardeningCommand(
             command="sshd -t -f /etc/ssh/sshd_config && echo 'New config valid'",
             description="Validate new SSH configuration",
+            requires_sudo=True
+        ))
+        
+        # Arm Dead Man's Switch before reload
+        commands.append(PythonAction(
+            function=self._arm_dead_mans_switch,
+            description="Arm Dead Man's Switch (60s fuse)",
+            args=(backup_file,),
             requires_sudo=True
         ))
         
@@ -327,6 +339,53 @@ AllowUsers {allowed_users_str}
                 error=str(e)
             )
     
+    def _arm_dead_mans_switch(self, conn, server_info, backup_file):
+        """Start a background process that reverts changes after 60s unless killed"""
+        try:
+            reload_cmd = self._get_ssh_reload_command()
+            # Complex shell command to sleep, restore, and reload
+            # We use nohup to ensure it survives connection loss
+            
+            revert_cmd = (
+                f"sleep 60 && "
+                f"mv {backup_file} /etc/ssh/sshd_config && "
+                f"{reload_cmd} && "
+                f"echo 'Dead mans switch triggered: reverted SSH config'"
+            )
+            
+            # Wrap in a way that gives us the PID of the sleep process or the shell
+            # We want to be able to kill this entire chain.
+            # Using a subshell in background: ( ... ) & echo $!
+            
+            full_cmd = f"nohup sh -c \"{revert_cmd}\" >/dev/null 2>&1 & echo $!"
+            
+            result = conn.sudo(full_cmd, hide=True)
+            if result.ok and result.stdout.strip().isdigit():
+                self.dead_mans_switch_pid = result.stdout.strip()
+                logger.info(f"Armed Dead Man's Switch with PID: {self.dead_mans_switch_pid}")
+                return HardeningResult(
+                    success=True,
+                    command="arm_dead_mans_switch",
+                    description="Armed Dead Man's Switch",
+                    output=f"Armed with PID {self.dead_mans_switch_pid}"
+                )
+            else:
+                return HardeningResult(
+                    success=False,
+                    command="arm_dead_mans_switch",
+                    description="Arm Dead Man's Switch",
+                    output="",
+                    error=f"Failed to get PID: {result.stderr}"
+                )
+        except Exception as e:
+            return HardeningResult(
+                success=False,
+                command="arm_dead_mans_switch",
+                description="Arm Dead Man's Switch",
+                output="",
+                error=str(e)
+            )
+
     def _test_ssh_connectivity(self, conn, server_info):
         """Test SSH connectivity after configuration changes with automatic rollback on failure"""
         import logging
@@ -349,10 +408,35 @@ AllowUsers {allowed_users_str}
                 'load_ssh_configs': False
             }
             
-            if key_file:
-                connect_kwargs['key_filename'] = key_file
-            elif password:
-                connect_kwargs['password'] = password
+            # Special handling for root user - use the designated root key if available
+            # This is critical because after hardening, root password login is disabled
+            if user == 'root' and os.path.exists(ROOT_KEY_PATH):
+                logger.info(f"Using root recovery key for connectivity test: {ROOT_KEY_PATH}")
+                # We prioritize this key. If lists are supported, we could append, 
+                # but for simplicity/reliability we'll set it as the primary key if it exists.
+                # Fabric/Paramiko can handle a list of keys in key_filename too.
+                current_keys = []
+                if key_file:
+                     if isinstance(key_file, list):
+                         current_keys.extend(key_file)
+                     else:
+                         current_keys.append(key_file)
+                
+                # Prepend the root key
+                current_keys.insert(0, ROOT_KEY_PATH)
+                connect_kwargs['key_filename'] = current_keys
+                
+                # If we have a key, we might not strictly need the password for auth,
+                # but we keep it for sudo if needed (though root usually doesn't need password for sudo)
+                if password:
+                    connect_kwargs['password'] = password
+
+            else:
+                 # Standard logic
+                if key_file:
+                    connect_kwargs['key_filename'] = key_file
+                elif password:
+                    connect_kwargs['password'] = password
                 
             if port != 22:
                 connect_kwargs['port'] = port
@@ -376,11 +460,21 @@ AllowUsers {allowed_users_str}
                 error_msg = f"SSH connection failed: {str(e)}"
                 
             if test_success:
+                msg = "SSH connectivity test successful - new configuration is working"
+                
+                # Disarm Dead Man's Switch
+                if self.dead_mans_switch_pid:
+                    # Kill the background process (usually sleep or sh)
+                    # We kill the process group or just the pid
+                    conn.sudo(f"kill {self.dead_mans_switch_pid} || true", hide=True, warn=True)
+                    logger.info(f"Disarmed Dead Man's Switch (PID {self.dead_mans_switch_pid})")
+                    msg += " | Dead Man's Switch Disarmed"
+                
                 return HardeningResult(
                     success=True,
                     command="python_function:_test_ssh_connectivity",
                     description="Test SSH connectivity after changes",
-                    output="SSH connectivity test successful - new configuration is working"
+                    output=msg
                 )
             else:
                 # Connection failed - attempt automatic rollback
@@ -406,6 +500,11 @@ AllowUsers {allowed_users_str}
                         
                         if restart_result.ok:
                             logger.info("SSH configuration rolled back successfully")
+                            
+                            # Also disarm the switch since we rolled back manually
+                            if self.dead_mans_switch_pid:
+                                conn.sudo(f"kill {self.dead_mans_switch_pid} || true", hide=True, warn=True)
+                            
                             return HardeningResult(
                                 success=False,
                                 command="python_function:_test_ssh_connectivity",
@@ -420,12 +519,14 @@ AllowUsers {allowed_users_str}
                 else:
                     logger.error("No SSH configuration backup found for rollback")
                 
+                # If we get here, manual rollback failed or no backup found.
+                # Hopefully the Dead Man's Switch will save us in <60s.
                 return HardeningResult(
                     success=False,
                     command="python_function:_test_ssh_connectivity",
                     description="Test SSH connectivity after changes",
                     output="SSH connectivity test failed",
-                    error=f"SSH test failed: {error_msg}. Manual intervention may be required."
+                    error=f"SSH test failed: {error_msg}. Manual intervention may be required. Dead Man's Switch active."
                 )
                 
         except Exception as e:
@@ -439,24 +540,33 @@ AllowUsers {allowed_users_str}
             )
     
     def _get_ssh_reload_command(self) -> str:
-        """Get the appropriate SSH reload command for the OS (safer than restart)"""
+        """Get the appropriate SSH reload command (tries both ssh and sshd)"""
         try:
-            os_family = OSFamily(self.os_family)
-            
-            # Detect init system from server info
             init_system = getattr(self.server_info, 'init_system', 'unknown')
             
-            if init_system == "systemd":
-                if os_family == OSFamily.DEBIAN:
-                    # Use reload instead of restart to avoid connection loss
-                    return "systemctl reload ssh || sudo systemctl restart ssh"
-                else:
-                    return "systemctl reload sshd || sudo systemctl restart sshd"
-            elif init_system == "openrc":
-                return "rc-service sshd reload || sudo rc-service sshd restart"
-            else:
-                # For SysV init systems
-                return "service sshd reload || sudo service sshd restart"
-        except ValueError:
-            # Fallback for unknown OS family
-            return "service sshd reload || sudo service sshd restart"
+            # Helper to construct "reload OR restart" for a service name
+            def cmd_for(srv, sys_type):
+                if sys_type == "systemd":
+                    return f"(systemctl reload {srv} || sudo systemctl restart {srv})"
+                elif sys_type == "openrc":
+                    return f"(rc-service {srv} reload || sudo rc-service {srv} restart)"
+                elif sys_type == "bsd":
+                    return f"service {srv} reload"
+                elif sys_type == "sysvinit":
+                     return f"(service {srv} reload || /etc/init.d/{srv} reload)"
+                else: 
+                     # Fallback
+                     return f"(service {srv} reload || sudo systemctl restart {srv} || sudo /etc/init.d/{srv} restart)"
+
+            # Generate commands for both 'ssh' and 'sshd'
+            # We chain them with OR (||) so if 'ssh' fails (e.g. not found), 'sshd' runs.
+            # If 'sshd' succeeds, we are done.
+            ssh_cmd = cmd_for("ssh", init_system)
+            sshd_cmd = cmd_for("sshd", init_system)
+            
+            return f"{sshd_cmd} || {ssh_cmd} "
+
+        except Exception as e:
+            logger.warning(f"Error determining SSH reload command: {e}")
+            # Robust fallback
+            return "(service ssh reload || service sshd reload || sudo service ssh restart || sudo service sshd restart)"

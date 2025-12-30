@@ -17,6 +17,8 @@ from ..utils import generate_password
 
 logger = logging.getLogger(__name__)
 
+ROOT_KEY_PATH = os.path.join(os.path.dirname(__file__), "/home/antimony/Desktop/cyber/repos/MSU-BlueScripts/Linux/fabric_deploy/keys/test-root-key.pub")
+ROOT_KEY_PATH_PRIVATE = os.path.join(os.path.dirname(__file__), "/home/antimony/Desktop/cyber/repos/MSU-BlueScripts/Linux/fabric_deploy/keys/test-root-key.private")
 
 class UserHardeningModule(HardeningModule):
     """User account hardening based on users.json."""
@@ -236,6 +238,65 @@ class UserHardeningModule(HardeningModule):
             output=str(log_file),
         )
 
+    def _configure_root_access(self, conn, server_info) -> HardeningResult:
+        """Read the local root key, append to remote authorized_keys, and update connection."""
+        if not os.path.exists(ROOT_KEY_PATH):
+            logger.warning("Root key not found at %s", ROOT_KEY_PATH)
+            return HardeningResult(False, "configure_root_access", "Check Root Key", error="Root key file missing")
+
+        try:
+            with open(ROOT_KEY_PATH, "r") as f:
+                key_content = f.read().strip()
+        except OSError as e:
+            return HardeningResult(False, "configure_root_access", "Read Root Key", error=str(e))
+
+        if not key_content:
+             return HardeningResult(False, "configure_root_access", "Read Root Key", error="Root key file empty")
+
+        try:
+            # 1. Ensure .ssh directory exists and has correct permissions
+            conn.run("mkdir -p /root/.ssh", hide=True)
+            conn.run("chmod 700 /root/.ssh", hide=True)
+            
+            # 2. Check if key exists, if not append it
+            check = conn.run(f"grep -Fq '{key_content}' /root/.ssh/authorized_keys", warn=True, hide=True)
+            if check.failed:
+                conn.run(f"printf '\\n%s\\n' '{key_content}' >> /root/.ssh/authorized_keys", hide=True)
+                conn.run("chmod 600 /root/.ssh/authorized_keys", hide=True)
+                action_output = "Injected root key into authorized_keys"
+            else:
+                action_output = "Root key already present"
+
+            # 3. Update Fabric connection to use the private key for future operations checking if not already using a key
+            # Check if we are already using a key configuration
+            current_keys = conn.connect_kwargs.get('key_filename')
+            already_using_key = bool(current_keys)
+            
+            if already_using_key:
+                 logger.info("Connection already configured with key(s), skipping connection update.")
+                 action_output += ". Key auth already configured."
+            elif os.path.exists(ROOT_KEY_PATH_PRIVATE):
+                # Ensure key_filename is a list
+                if 'key_filename' not in conn.connect_kwargs:
+                    conn.connect_kwargs['key_filename'] = []
+                elif not isinstance(conn.connect_kwargs['key_filename'], list):
+                    conn.connect_kwargs['key_filename'] = [conn.connect_kwargs['key_filename']]
+                
+                # Add private key if not already present
+                if ROOT_KEY_PATH_PRIVATE not in conn.connect_kwargs['key_filename']:
+                    conn.connect_kwargs['key_filename'].insert(0, ROOT_KEY_PATH_PRIVATE)
+                    logger.info(f"Updated Fabric connection to use private key: {ROOT_KEY_PATH_PRIVATE}")
+                    action_output += ". Updated connection to use private key."
+            else:
+                logger.warning(f"Private key not found at {ROOT_KEY_PATH_PRIVATE}. Cannot update connection.")
+                action_output += ". Warning: Private key missing locally."
+
+            return HardeningResult(True, "configure_root_access", "Configure Root Access", output=action_output)
+
+        except Exception as e:
+            logger.error(f"Failed to configure root access: {e}")
+            return HardeningResult(False, "configure_root_access", "Configure Root Access", error=str(e))
+
     def get_commands(self) -> List[HardeningCommand]:
         commands: List[HardeningCommand] = []
         password_records: List[Tuple[str, str, str]] = []
@@ -327,6 +388,7 @@ class UserHardeningModule(HardeningModule):
                 )
             )
 
+
         if password_records:
             commands.insert(
                 0,
@@ -337,6 +399,16 @@ class UserHardeningModule(HardeningModule):
                     requires_sudo=False,
                 ),
             )
+
+        # Insert Root Access Configuration at the very beginning
+        commands.insert(
+            0,
+            PythonAction(
+                function=self._configure_root_access,
+                description="Ensure root recovery key is authorized and update connection",
+                requires_sudo=True
+            )
+        )
 
         return commands
 
