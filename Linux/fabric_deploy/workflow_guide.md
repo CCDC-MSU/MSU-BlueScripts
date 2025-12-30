@@ -2,7 +2,7 @@
 **"Run and Forget" Automated Defense**
 
 ## 1. Introduction
-This system is designed to **automatically discover, profile, and secure** our remote Linux/Unix/BSD systems. This tool provides a robust baseline configuration without requiring manual intervention on every host.
+This system is designed to **automatically discover, profile, and secure** our remote Linux/Unix/BSD systems. This tool provides an automated way to harden users (proper sudoers access, change passwords), harden ssh and more.
 
 **Philosophy**:
 - **Automated**: One command to harden all Linux/bsd hosts.
@@ -12,7 +12,7 @@ This system is designed to **automatically discover, profile, and secure** our r
 ---
 
 ## 2. The Setup (T-30 Minutes)
-The **Operator** on the Jump Box is responsible for these files. All Blue Teamers should verify their credentials here.
+We will setup everything on one of the jump boxes. This includes cloning the repo, and putting in place the required configs/keys.
 
 ### `hosts.txt`
 The inventory of our target systems. This inventory will be gathered from the packet provided to us.
@@ -29,6 +29,8 @@ The central authority for user management. This file dicates what users exist on
 - **super_users**: Admin/Sudo accounts (all the admin users (includes root and blue-team-agent)).
 - **do_not_change_users**: Black team accounts that we should not touch
 
+### `keys/root-key`
+This key will be added to /root/.ssh/authorized_keys ensuring that root has a non password way to access the machine (this is important as ssh hardening attemps to block password auth for the root user)
 ---
 
 ## 3. The Workflow (Automated)
