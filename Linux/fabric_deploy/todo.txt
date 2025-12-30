@@ -31,6 +31,7 @@ Disk health: smartctl -H / nvme smart-log (if tools installed)
 ensure whatever your ssh service is, it is enabled to run automatically after boot (so reboot does not brick the box)
 modify archive_ssh_keys.sh to not touch any black team accounts
 make sure diff-changes.sh can diff against arbitirary snapshots (not just latest) (the hacky workaround would be to manually point the latest symlink to the folder you want)
+make sure to add the new honeypot shell to /etc/shells
 
 ==== simplification ===
 replace setup agent module with an extention to the users module    (might want to add a ssh key to the root and hardening user)

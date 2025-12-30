@@ -205,10 +205,25 @@ AllowUsers {allowed_users_str}
             requires_sudo=True
         ))
         
+        # Ensure SSH is enabled at boot
+        enable_cmd = self._get_ssh_enable_command()
+        commands.append(HardeningCommand(
+            command=enable_cmd,
+            description="Ensure SSH service is enabled at boot",
+            requires_sudo=True
+        ))
+        
         # Test SSH connectivity with Python function
         commands.append(PythonAction(
             function=self._test_ssh_connectivity,
             description="Test SSH connectivity after changes",
+            requires_sudo=False
+        ))
+        
+        # Mark as safe to reboot ONLY if we get here (meaning test checks passed)
+        commands.append(PythonAction(
+            function=self._set_reboot_safety,
+            description="Signal that reboot is safe",
             requires_sudo=False
         ))
         
@@ -570,3 +585,42 @@ AllowUsers {allowed_users_str}
             logger.warning(f"Error determining SSH reload command: {e}")
             # Robust fallback
             return "(service ssh reload || service sshd reload || sudo service ssh restart || sudo service sshd restart)"
+
+    def _set_reboot_safety(self, conn, server_info) -> HardeningResult:
+        """Mark the server as safe to reboot (SSH is verified working)"""
+        server_info.safe_to_reboot = True
+        return HardeningResult(
+            success=True,
+            command="python_function:_set_reboot_safety",
+            description="Mark server as safe to reboot",
+            output="Server marked as safe to reboot"
+        )
+
+    def _get_ssh_enable_command(self) -> str:
+        """Get the appropriate command to enable SSH at boot"""
+        try:
+            init_system = getattr(self.server_info, 'init_system', 'unknown')
+            
+            def cmd_for(srv, sys_type):
+                if sys_type == "systemd":
+                    return f"systemctl enable {srv}"
+                elif sys_type == "openrc":
+                    return f"rc-update add {srv} default"
+                elif sys_type == "bsd":
+                    # sysrc for FreeBSD/NetBSD, rcctl for OpenBSD
+                    return f"(sysrc sshd_enable=YES || rcctl enable {srv})"
+                elif sys_type == "sysvinit":
+                     # generic sysvinit fallback (Debian/RedHat legacy)
+                     return f"(update-rc.d {srv} defaults || chkconfig {srv} on)"
+                else: 
+                     # Fallback chain
+                     return f"(systemctl enable {srv} || rc-update add {srv} default || update-rc.d {srv} defaults || chkconfig {srv} on || sysrc sshd_enable=YES)"
+
+            ssh_cmd = cmd_for("ssh", init_system)
+            sshd_cmd = cmd_for("sshd", init_system)
+            
+            return f"{sshd_cmd} || {ssh_cmd}"
+
+        except Exception as e:
+            logger.warning(f"Error determining SSH enable command: {e}")
+            return "systemctl enable sshd || rc-update add sshd default"
