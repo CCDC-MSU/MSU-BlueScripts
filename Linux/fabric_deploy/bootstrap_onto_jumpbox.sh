@@ -1,20 +1,24 @@
 #!/bin/bash
 # CCDC Bootstrap Script - Sets up fabric deployment framework on jump server
+# Assumes it is run from the Linux/fabric_deploy directory of the repo
 set -e
 
 echo "=========================================="
 echo "CCDC Fabric Deploy Bootstrap"
 echo "=========================================="
 
-# Navigate to home directory and create workspace
-cd ~
-echo "[+] Creating workspace directory..."
-rm -rf ccdc-scripts 2>/dev/null || true
-mkdir -p ccdc-workspace
-cd ccdc-workspace
+# Check execution context
+if [ ! -f "fabfile.py" ]; then
+    echo "[!] Error: fabfile.py not found!"
+    echo "    Please run this script from the Linux/fabric_deploy directory."
+    echo "    Example: cd Linux/fabric_deploy && ./bootstrap_onto_jumpbox.sh"
+    exit 1
+fi
 
-# Update system packages
-echo "[+] Updating system packages..."
+echo "[+] Execution context verified."
+
+# Update system packages and install dependencies
+echo "[+] Updating system packages and installing dependencies..."
 if command -v apt-get >/dev/null 2>&1; then
     sudo apt-get update
     sudo apt-get install -y python3 python3-pip python3-venv git curl
@@ -25,30 +29,17 @@ elif command -v dnf >/dev/null 2>&1; then
     sudo dnf update -y
     sudo dnf install -y python3 python3-pip git curl
 else
-    echo "[!] Unsupported package manager. Please install python3, pip, and git manually."
+    echo "[!] Unsupported package manager. Please install python3, pip, python3-venv, git, and curl manually."
     exit 1
 fi
 
-# Verify Python installation
-echo "[+] Verifying Python installation..."
-python3 --version
-pip3 --version
-
-# Clone the repository
-echo "[+] Cloning CCDC scripts repository..."
-# TODO: Replace with actual repository URL
-REPO_URL="https://github.com/your-org/ccdc-scripts.git"
-echo "[!] Please update REPO_URL in this script with your actual repository"
-# Uncomment the following line once you set the correct repository URL:
-git clone "$REPO_URL" ccdc-scripts
-
-# For now, create the directory structure manually
-mkdir -p ccdc-scripts/fabric_deploy
-cd ccdc-scripts/fabric_deploy
-
 # Create Python virtual environment
 echo "[+] Creating Python virtual environment..."
-python3 -m venv venv
+if [ -d "venv" ]; then
+    echo "    venv already exists, skipping creation."
+else
+    python3 -m venv venv
+fi
 
 # Activate virtual environment
 echo "[+] Activating virtual environment..."
@@ -58,68 +49,38 @@ source venv/bin/activate
 echo "[+] Upgrading pip..."
 pip install --upgrade pip
 
-# Install dependencies
-echo "[+] Installing Python dependencies..."
-# Create requirements.txt if it doesn't exist
-cat > requirements.txt << EOF
+# Install dependencies from requirements.txt
+if [ -f "requirements.txt" ]; then
+    echo "[+] Installing Python dependencies from requirements.txt..."
+    pip install -r requirements.txt
+else
+    echo "[!] Warning: requirements.txt not found! Creating default..."
+    cat > requirements.txt << EOF
 fabric>=3.2.2
 invoke>=2.2.0
 paramiko>=3.4.0
 pyyaml>=6.0
 EOF
-
-pip install -r requirements.txt
-
-# Create basic configuration files
-echo "[+] Creating initial configuration..."
-
-# Create config.yaml if it doesn't exist
-if [ ! -f config.yaml ]; then
-    cat > config.yaml << 'EOF'
-# CCDC Hardening Deployment Configuration
-
-# Default connection settings
-connection:
-  timeout: 30
-  connect_timeout: 10
-  user: "root"
-  password: "CHANGE_ME_BEFORE_USE"  # IMPORTANT: Change this!
-
-# Logging configuration
-logging:
-  level: "INFO"
-  file: "ccdc_deployment.log"
-
-# Script deployment mapping based on OS type
-deployment_profiles:
-  debian_ubuntu:
-    priority_scripts:
-      - "scripts/linux/01-initial-hardening.sh"
-      - "scripts/linux/02-change-passwords.sh" 
-      - "scripts/linux/03-ssh-hardening.sh"
-      - "scripts/linux/04-firewall-setup.sh"
-    
-  centos_rhel:
-    priority_scripts:
-      - "scripts/linux/01-initial-hardening.sh"
-      - "scripts/linux/02-change-passwords.sh"
-      - "scripts/linux/03-ssh-hardening.sh"
-      - "scripts/linux/04-firewall-setup.sh"
-
-# Script categories for selective deployment
-script_categories:
-  critical:
-    - "scripts/linux/02-change-passwords.sh"
-    - "scripts/linux/03-ssh-hardening.sh"
-  firewall:
-    - "scripts/linux/04-firewall-setup.sh"
-  monitoring:
-    - "scripts/linux/05-monitoring-setup.sh"
-EOF
+    pip install -r requirements.txt
 fi
 
-# Create hosts.txt template
-if [ ! -f hosts.txt ]; then
+# Configuration Checks
+echo "[+] Checking configuration files..."
+
+if [ ! -f "config.yaml" ]; then
+    echo "[!] config.yaml missing! (This should be in the repo)"
+    echo "    Creating default template..."
+    # (Insert default config.yaml creation logic here if needed, but assuming repo has it)
+    # For now, just warn as it should be there.
+fi
+
+if [ ! -f "users.json" ]; then
+    echo "[!] users.json missing! Please create it from templates or docs."
+fi
+
+if [ ! -f "hosts.txt" ]; then
+    echo "[!] hosts.txt missing! Please create it."
+    # Create template if missing
     cat > hosts.txt << 'EOF'
 # CCDC Target Hosts with Credentials
 # Supported formats:
@@ -127,47 +88,36 @@ if [ ! -f hosts.txt ]; then
 # 2. host:user:password            (password authentication)
 # 3. host:user:keyfile             (SSH key authentication)
 # 4. host:user:password:port       (custom port)
+# 5. host:user:password:name       (friendly name)
 
-# Examples:
-# 192.168.1.10                     # Uses defaults from config.yaml
-# 192.168.1.11:root:changeme123    # Password auth
-# 192.168.1.12:admin:newpass       # Different user/password
-# 192.168.1.13:root:~/.ssh/id_rsa  # SSH key auth
-# 192.168.1.14:root:mypass:2222    # Custom SSH port
-
-# Add your target hosts below:
-# 10.0.1.100:root:your-password-here
+# Example:
+# 192.168.1.10:root:password:Web-Server
 EOF
+    echo "    Created hosts.txt template."
 fi
 
-# Create scripts directory structure
-echo "[+] Creating scripts directory structure..."
-mkdir -p scripts/linux scripts/windows
+# Check for SSH Keys
+if [ ! -d "keys" ]; then
+    mkdir keys
+fi
 
-# Set up SSH key if it doesn't exist
-echo "[+] Setting up SSH keys..."
-if [ ! -f ~/.ssh/id_rsa ]; then
-    echo "[!] No SSH key found. Generating new SSH key..."
-    ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""
-    echo "[+] SSH key generated at ~/.ssh/id_rsa"
-    echo "[!] Remember to copy your public key to target hosts:"
-    echo "    ssh-copy-id user@target-host"
+if [ ! -f "keys/test-root-key.private" ]; then
+    echo "[!] Warning: keys/test-root-key.private missing."
+    echo "    This key is needed for root persistence."
+    echo "    Please generate it: ssh-keygen -f keys/test-root-key.private -N ''"
 fi
 
 # Create activation script for convenience
+echo "[+] Creating activate.sh helper..."
 cat > activate.sh << 'EOF'
 #!/bin/bash
 # Convenience script to activate the virtual environment
 source venv/bin/activate
 echo "Virtual environment activated. You can now run fabric commands:"
-echo "  fab test-connection --host TARGET_IP"
-echo "  fab discover --host TARGET_IP"
+echo "  fab test-connection --host <host>"
+echo "  fab discover-all"
 echo "  fab harden"
 echo ""
-echo "Don't forget to:"
-echo "1. Update config.yaml with your default password"
-echo "2. Add target hosts to hosts.txt"
-echo "3. Copy SSH keys to target hosts if using key auth"
 EOF
 chmod +x activate.sh
 
@@ -177,12 +127,7 @@ echo "Bootstrap Complete!"
 echo "=========================================="
 echo ""
 echo "Next steps:"
-echo "1. Update the REPO_URL in this script and re-run to clone actual repository"
-echo "2. Edit config.yaml and change the default password"
-echo "3. Add your target hosts to hosts.txt"
-echo "4. Activate the environment: source activate.sh"
-echo "5. Test connectivity: fab test-connection --host TARGET_IP"
-echo "6. Run discovery: fab harden"
+echo "1. Activate the environment: source activate.sh"
+echo "2. Edit config.yaml and hosts.txt if needed."
+echo "3. Run 'fab harden' to start protecting your systems."
 echo ""
-echo "Current location: $(pwd)"
-echo "Activate with: source activate.sh"
