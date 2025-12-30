@@ -55,29 +55,66 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-# Check if backup exists
-if [ ! -L "$LATEST_BACKUP" ] && [ ! -d "$LATEST_BACKUP" ]; then
-    log_error "No backup found at $LATEST_BACKUP"
-    log_error ""
-    log_error "Looking for backups in $BACKUP_ROOT..."
-    
-    # Try to find the most recent backup
-    MOST_RECENT=$(find "$BACKUP_ROOT" -maxdepth 1 -type d -name "20*" 2>/dev/null | sort -r | head -n 1)
-    
-    if [ -n "$MOST_RECENT" ]; then
-        log_warn "Found backup at: $MOST_RECENT"
-        log_warn "Using this backup for comparison..."
-        LATEST_BACKUP="$MOST_RECENT"
-    else
-        log_error "No backups found in $BACKUP_ROOT"
-        log_error "Run backup-system-state.sh first"
+# Argument parsing
+FORCE_LATEST=0
+if [ "$1" = "--latest" ]; then
+    FORCE_LATEST=1
+fi
+
+# Function to select backup
+select_backup() {
+    # Check if backup root exists
+    if [ ! -d "$BACKUP_ROOT" ]; then
+        log_error "Backup directory $BACKUP_ROOT does not exist."
         exit 1
     fi
-elif [ -L "$LATEST_BACKUP" ]; then
-    log_info "Using symlinked backup: $LATEST_BACKUP -> $(readlink -f "$LATEST_BACKUP")"
-else
-    log_info "Using backup directory: $LATEST_BACKUP"
-fi
+
+    # Get list of backups (directories starting with 20)
+    # BSD find doesn't support -printf, using simple ls loop
+    backups=$(find "$BACKUP_ROOT" -maxdepth 1 -type d -name "20*" | sort -r)
+    
+    if [ -z "$backups" ]; then
+        log_error "No backups found in $BACKUP_ROOT"
+        exit 1
+    fi
+
+    # Count backups
+    count=$(echo "$backups" | wc -l)
+
+    # If only one backup or forcing latest, use the first one
+    if [ "$count" -eq 1 ] || [ "$FORCE_LATEST" -eq 1 ]; then
+        LATEST_BACKUP=$(echo "$backups" | head -n 1)
+        log_info "Using backup: $LATEST_BACKUP"
+        return
+    fi
+
+    # Interactive selection
+    log_info "Multiple snapshots found. Please select one:"
+    i=1
+    echo "$backups" | while read -r line; do
+        dirname=$(basename "$line")
+        echo "  $i) $dirname"
+        i=$((i + 1))
+    done
+    
+    printf "Enter number (default 1): "
+    read -r choice
+    
+    if [ -z "$choice" ]; then
+        choice=1
+    fi
+    
+    # Validate input (basic check)
+    if [ "$choice" -lt 1 ] || [ "$choice" -gt "$count" ] 2>/dev/null; then
+        log_error "Invalid selection: $choice"
+        exit 1
+    fi
+    
+    LATEST_BACKUP=$(echo "$backups" | sed -n "${choice}p")
+    log_info "Using selected backup: $LATEST_BACKUP"
+}
+
+select_backup
 
 BACKUP_FILES="${LATEST_BACKUP}/files"
 BACKUP_STATE="${LATEST_BACKUP}/state"
