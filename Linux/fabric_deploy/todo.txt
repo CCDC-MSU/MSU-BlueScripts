@@ -28,10 +28,9 @@ crontab -l + check cron service / timers
 Disk health: smartctl -H / nvme smart-log (if tools installed)
 
 ====== important =====
-add init system discovery to discovery
-fix sshd restart based on init system
-    /etc/rc.d/rc.sshd restart   <- slackware
-    rc-service sshd restart     <- rc based systems
+ensure whatever your ssh service is, it is enabled to run automatically after boot (so reboot does not brick the box)
+modify archive_ssh_keys.sh to not touch any black team accounts
+make sure diff-changes.sh can diff against arbitirary snapshots (not just latest) (the hacky workaround would be to manually point the latest symlink to the folder you want)
 
 ==== simplification ===
 replace setup agent module with an extention to the users module    (might want to add a ssh key to the root and hardening user)
@@ -42,13 +41,10 @@ lockdown.sh
     update lockdown to allow any port from trusted ips
 
 ssh_hardening.py
-    improve recovery from bad ssh configs, instead of relying on current ssh connection to run commands to revert the change, run a command like this:
-    nohup:
-        print pid
-        sleep(60)
-        revert command
-        restart sshd
-    capture the pid an on connection test success kill pid
+    test
 
 user_hardening.py
     have user hardening implant ssh keys for users
+
+password generation:
+    make sure " or : is not one of the passwd chars

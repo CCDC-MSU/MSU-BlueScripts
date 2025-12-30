@@ -603,7 +603,6 @@ def _upload_tools_internal(conn):
     logger.info(f"Tools uploaded to {remote_tools_path}")
 
 
-
 @task
 def deploy_scripts(c, hosts_file='hosts.txt', dry_run=False, categories=None, priority_only=False):
     """Deploy only bash scripts to discovered hosts"""
@@ -881,29 +880,6 @@ def _write_runbash_output(output_file, server_creds, script_path, steps, exec_re
                 f.write("\n")
     except Exception as e:
         logger.error(f"Failed to write output file {output_file}: {e}")
-
-
-@task 
-def test_connection(c, host, user=None, password=None):
-    """Test basic SSH connection to a host"""
-    if user is None:
-        user = CONFIG.get('connection', {}).get('user', 'root')
-    if password is None:
-        password = CONFIG.get('connection', {}).get('password')
-    
-    if not password:
-        password = getpass.getpass(f"Enter password for {user}@{host}: ")
-    
-    try:
-        config = Config(overrides={'load_ssh_configs': False})
-        with Connection(host, user=user, password=password, config=config) as conn:
-            result = conn.run('echo "Connection successful!"', hide=True)
-            logger.info(f"✓ Successfully connected to {host} as {user}")
-            logger.info(f"Response: {result.stdout.strip()}")
-            return True
-    except Exception as e:
-        logger.error(f"✗ Connection failed to {host}: {e}")
-        return False
 
 
 @task

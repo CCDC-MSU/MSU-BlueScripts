@@ -2,83 +2,67 @@
 
 **Go back to [main README](README.md)**
 
-This is one of the most important modules in the CCDC framework, providing comprehensive user account security management.
+This is modules manages user access, credentials, and persistence.
 
 ## Overview
 
-The User Hardening Module (`user_hardening.py`) is a core component of the CCDC Hardening Deployment Framework. It provides an automated and configurable way to manage user accounts and privileges on target systems.
+The User Hardening Module (`user_hardening.py`) ensures that only authorized users exist on the system, that they have secure credentials, and that the Blue Team maintains root through both password and sshkey.
 
 ### Key Features
 
--   **Authorized User Management**: Uses a central configuration file to define regular, super, and protected accounts and creates missing users.
--   **Comprehensive Sudo Control**: Grants and revokes `sudo` access based on discovered sudoers entries and group membership.
--   **Password Management**: Uses `users.json` passwords for all authorized users (except do-not-change accounts), generates missing ones, supports per-host unique passwords, and logs them locally.
--   **Unauthorized User Security**: Locks any account with a valid shell that is not defined in the configuration (no deletion).
--   **Protected Account Safety**: Skips any account listed in `dontchange_accounts`.
--   **Cross-Platform Support**: Works on both Linux and BSD/Unix systems.
+-   **Root Access Persistence** (CRITICAL): Automatically injects a local SSH key (`keys/test-root-key.pub`) into `/root/.ssh/authorized_keys` *before* changing any passwords. This ensures we don't lock ourselves out.
+-   **Password Rotation**: Generates and applies complex passwords for all authorized users.
+-   **Sudoers Sanitation**: Revokes `sudo` access from unauthorized users and grants it only to valid `super_users`.
+-   **Account Locking**: Locks unauthorized accounts (valid shell but not in config) to neutralize Red Team backdoors.
+-   **Logging**: Saves all generated passwords to `logs/user-hardening/<host>/passwords_<timestamp>.txt` on the Jump Box.
 
 ## Configuration: `users.json`
 
-The module reads `fabric_deploy/users.json` and uses it to define three categories of users. Values are treated as passwords; missing values are generated and written back. Use `__PER_HOST__` to request per-host unique passwords without writing back.
+The module checks `fabric_deploy/users.json` to classify users.
 
 ```json
 {
   "regular_users": {
-    "jon": "StrongPassword1!",
-    "jack": "__PER_HOST__"
+    "jon": "password_for_jon_to_use_on_all_hosts",
+    "jack": ""  # a complex password will be generated and used across all the hosts (this is to mimic domain joined machines, same password works everywhere)
   },
   "super_users": {
-    "dradmin": "StrongPassword2!",
-    "mr-it": "__PER_HOST__"
+    "dradmin": "StrongStaticPassword!",
+    "root":"__PER_HOST__"   # have a differnt password per host for root
   },
-  "dontchange_accounts": {
-    "black-team-acc": "do not change",
-    "scan-agent": "do not change",
-    "root": "system account - do not modify"
+  "do_not_change_users": {
+    "BTA": "black team service account"
   }
 }
 ```
 
-*   **`regular_users`**: Standard user accounts that should exist on the system but should **not** have `sudo` privileges.
-*   **`super_users`**: Administrative accounts that are granted `sudo` privileges.
-*   **`dontchange_accounts`**: A list of accounts that the script should never modify. This is crucial for protecting system accounts, service accounts, and any accounts used by the competition scoring engine.
-*   **Per-host unique passwords**: Set the value to `__PER_HOST__` to generate a unique password on each host (these values are not written back to `users.json`).
+*   **`__PER_HOST__`**: If used as a password value, the module generates a unique random password for that user on each host.
+*   **`do_not_change_users`**: Critical safety list. Users here are **ignored** by password changes and locking logic. **ALWAYS** put Black Team/Scoring Engine accounts here.
 
 ## Module Workflow
 
-1.  **Load Configuration**: Reads `users.json`, populates missing passwords (writing them back), and identifies regular, super, and do-not-change accounts (per-host sentinel values are preserved).
-2.  **Resolve Current Sudo Access**: Builds the current sudo user set from sudoers data and group membership.
-3.  **Enforce Super Users**: Ensures each super user exists, sets the configured password, and grants sudo access.
-4.  **Enforce Regular Users**: Ensures each regular user exists, sets the configured password, and removes any sudo access.
-5.  **Lock Unauthorized Users**: Locks any discovered user with a valid shell that is not in `users.json` (excluding do-not-change accounts).
-6.  **Write Password Log**: Writes passwords used to `logs/user-hardening/<host>/passwords_<timestamp>.txt` on the jump box.
-
-## Discovery Context
-
--   Uses `UserInfo.valid_shell` to determine which discovered users are eligible for password/access enforcement.
--   Uses the `sudoers` block (dump + parsed lists) to resolve current sudo access before enforcing changes.
+1.  **Inject Root Key**: Checks if `keys/test-root-key.pub` is in `/root/.ssh/authorized_keys`. If not, adds it. Updates the active connection to use the private key.
+2.  **Load Config**: Reads `users.json`.
+3.  **Super Users**: Ensures they exist, adds to sudoers, sets password.
+4.  **Regular Users**: Ensures they exist, **removes** from sudoers, sets password.
+5.  **Lock Unknowns**: Finds any user with a valid shell (`/bin/bash`, `sh`, etc. (dynamically tested through su $user)) not in your lists and runs `usermod -L` / `chsh -s /sbin/nologin`.
+6.  **Log Passwords**: Dumps the new credentials to a local file.
 
 ## Usage
 
-It is highly recommended to always test this module in dry-run mode before applying any changes.
-The default hardening pipeline in `utilities/deployment.py` does not include `user_hardening`; run it via `fab test-module` or add it to the orchestrator.
+### Primary Method (Automated)
+This module runs automatically as part of the main hardening pipeline:
+```bash
+fab harden
+```
 
-*   **Test in Dry-Run Mode (Safe)**:
-    ```bash
-    fab test-module --module=user_hardening
-    ```
+### Manual / Testing
+To run *only* this module (e.g., to fix broken users):
+```bash
+fab test-module --module=user_hardening --live
+```
 
-*   **Execute in Live Mode**:
-    After you have reviewed the dry-run output and are confident in the changes, run the module in live mode.
-    ```bash
-    fab test-module --module=user_hardening --live
-    ```
+## ⚠️ Important Considerations
 
-## Important Considerations
-
-*   **Review `users.json` Before Deployment**: Ensure that all authorized users, including any service or competition accounts, are correctly listed in the `dontchange_accounts` section.
-*   **Passwords in `users.json`**: Values are treated as passwords; missing values are generated and written back. Use `__PER_HOST__` for per-host unique passwords.
-*   **Missing Users**: This module creates missing users in `regular_users` or `super_users`, using `/bin/sh` as the default shell.
-*   **System Accounts**: Any account with a valid shell that is not listed in `users.json` is locked, including service/system accounts. Add them to `dontchange_accounts` if they must remain active.
-*   **Coordinate with Your Team**: Make sure that the user and password configuration meets the requirements of your team.
-*   **Securely Document Passwords**: `users.json` contains passwords (some auto-populated) and generated passwords are stored locally under `logs/user-hardening/` on the jump box; treat both as sensitive.
+1.  **Do Not Lock Out The Scoring Engine**: Use `do_not_change_users` for any account required by the competition (check your packet!).
+2.  **Root Access**: The script sets `root` access via SSH key. You should use `ssh -i keys/test-root-key.private root@<host>` if the password fails.
