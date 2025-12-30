@@ -1,159 +1,104 @@
+**Concerned with ops? [Look at the workflow guide](workflow_guide.md)**
+---
 # CCDC Hardening Deployment Framework
 
-This repository contains a Python Fabric-based automation framework designed for the rapid deployment of security hardening configurations, tailored for Collegiate Cyber Defense Competition (CCDC) scenarios. It allows for automated discovery of system information and deployment of hardening modules across multiple hosts.
+**Automated Defense**
+
+This framework is designed for use in the Collegiate Cyber Defense Competition (CCDC). It automates the discovery, lockdown, and hardening of Linux/BSD systems, allowing a single operator to secure an entire fleet of machines in minutes.
 
 ## Features
 
-*   **Automated System Discovery**: Automatically fingerprints target systems to identify OS, users, services, and more.
-*   **Sudoers Discovery**: Captures sudoers content and summarizes sudo users, sudo groups, NOPASSWD entries, and groups with ALL privileges.
-*   **Modular Hardening**: A flexible, module-based architecture for applying specific hardening configurations.
-*   **OS-Aware Deployment**: Automatically selects the appropriate scripts and configurations based on the detected OS family.
+*   **One-Click Hardening**: `fab harden` runs the entire defense pipeline across all hosts in parallel.
+*   **Safety First**:
+    *   **Dead Man's Switch**: SSH changes automatically revert if you lock yourself out.
+    *   **Root Persistence**: Automatically injects a recovery SSH key before rotating passwords.
+*   **Aggressive Defense**:
+    *   **User Lockdown**: Rotates all passwords, locks unauthorized shells, and sanitizes sudoers.
+    *   **Honeypot Traps**: Identifies suspicious idle accounts and traps them in a honeypot environment.
+    *   **Firewall Lockdown**: Blocks all inbound traffic except trusted SSH.
+*   **Cross-Platform**: Automatically adapts to Debian, RHEL, SUSE, Arch, Alpine, and BSD variants.
 
 ## Getting Started
 
-This project is designed to be run from a central "jumpbox" or administrative machine. The `bootstrap_onto_jumpbox.sh` script is provided to quickly set up the environment.
+Designed to run from a central "Jump Box".
 
-### Prerequisites
+### 1. Setup
+```bash
+# Clone the repo
+git clone <repo_url> ccdc-scripts
+cd ccdc-scripts/Linux/fabric_deploy
 
-*   A Linux-based machine to act as the jumpbox.
-*   `git`, `python3`, and `python3-pip` installed on the jumpbox.
+# Run the bootstrap script (installs Python/Pip, creates venv)
+./bootstrap_onto_jumpbox.sh
 
-### Setup
+# Activate environment
+source activate.sh
+```
 
-1.  **Clone the Repository**:
-    ```bash
-    git clone <your-repository-url> ccdc-scripts
-    cd ccdc-scripts/fabric_deploy
+### 2. Configuration
+*   **`hosts.txt`**: List your targets.
+    ```text
+    192.168.1.10:root:password:Web-Server
+    192.168.1.11:admin:password:DB-Server
     ```
-
-2.  **Run the Bootstrap Script**:
-    The `bootstrap_onto_jumpbox.sh` script will:
-    *   Install necessary system packages.
-    *   Create a Python virtual environment.
-    *   Install the required Python dependencies from `requirements.txt`.
-    *   Create initial configuration files (`config.yaml`, `hosts.txt`).
-    *   Generate an SSH key if one doesn't exist.
-
-    To run the script:
-    ```bash
-    ./bootstrap_onto_jumpbox.sh
-    ```
-
-3.  **Activate the Virtual Environment**:
-    ```bash
-    source activate.sh
-    ```
-
-4.  **Configure the Framework**:
-    *   **`hosts.txt`**: Add the IP addresses or hostnames of your target machines to this file, along with their credentials.
-    *   **`users.json`**: If you are using the `user_hardening` module, configure your authorized users and passwords here; missing passwords are generated and written back (use `__PER_HOST__` for per-host unique).
+*   **`users.json`**: Build users.json with the list of correct users. Leave the password fields empty for a password to be auto generated. (same on all hosts by default)
+    *   **`do_not_change_users`**: CRITICAL. List Black Team/Scoring accounts here so they aren't touched.
+    *   **`__PER_HOST__`**: Use this as a password value to generate a unique random password for that user on each host.
 
 ## Usage
 
-All commands are run from the `Linux` directory using `fab`.
+### Primary Workflow: `fab harden`
 
-### Basic Operations
+This is the only command you typically need. It runs the full hardening pipeline:
 
-*   **Test Connection to a Host**:
-    ```bash
-    fab test-connection --host <ip-address>
-    ```
+```bash
+fab harden
+```
 
-*   **Discover a Single Host**:
-    ```bash
-    fab discover --host <ip-address>
-    ```
-    The discovery summary JSON includes a `sudoers` block with the sudoers dump and parsed privilege data.
+**What it does (The Pipeline):**
+1.  **Discovery**: Profiles the OS, users, and services.
+2.  **Snapshot**: Backs up critical files to `/root/pre-hardening-snapshot/`.
+3.  **Root Persistence**: Injects `keys/test-root-key.pub` into root's `authorized_keys`.
+4.  **User Hardening**: Rotates passwords, locks invalid users, fixes sudoers.
+5.  **Firewall & Lockdown**: Installs firewall, blocks inbound traffic, runs `lockdown.sh`.
+6.  **SSH Hardening**: Secures `sshd_config`, enables Dead Man's Switch, sets up Honeypots.
+7.  **Script Deployment**: Uploads helper tools (`diff-changes.sh`, etc.) to `/root/tools`.
+8.  **Logging**: Configures persistent logging (auditd/rsyslog).
 
-*   **Discover All Hosts in hosts.txt**:
-    ```bash
-    fab discover-all
-    ```
-    Runs in parallel. Per-host logs are written to `logs/discover-all/<host>/<timestamp>.log`.
+### Viewing Results
+*   **Reports**: `reports/<host>/<timestamp>.md` (High-level summary of what changed).
+*   **Logs**: `logs/harden/<host>/<timestamp>.log` (Detailed execution logs).
+*   **Passwords**: `logs/user-hardening/<host>/passwords_<timestamp>.txt` (New passwords).
 
-*   **Run the Full Hardening Pipeline**:
-    This command will discover all hosts in `hosts.txt` and then apply the appropriate hardening modules.
-    ```bash
-    fab harden
-    ```
-    Runs in parallel. Per-host logs are written to `logs/harden/<host>/<timestamp>.log`.
+---
 
-*   **Dry Run**:
-    To see what changes would be made without actually applying them, use the `--dry-run` flag.
-    ```bash
-    fab harden --dry-run
-    ```
+## Advanced Usage / Troubleshooting
 
-### Advanced Usage
+**Manual Module Testing**
+To run a specific module (e.g., to fix SSH without running the full pipeline):
+```bash
+fab test-module --module=ssh_hardening --live
+```
+*(Available modules: user_hardening, ssh_hardening, firewall_hardening, package_installer, logging_setup)*
 
-*   **Deploy Specific Modules**:
-    ```bash
-    fab harden --modules=ssh_hardening,firewall_hardening
-    ```
+**Run Custom Scripts**
+Run a local script on all remote hosts:
+```bash
+fab run-script --file scripts/all/my-custom-fix.sh
+```
 
-*   **Deploy Scripts by Category**:
-    ```bash
-    fab deploy-scripts --categories=users,ssh,firewall
-    ```
-
-*   **Run an Arbitrary Local Script on All Targets**:
-    ```bash
-    fab run-script --file /path/to/script.sh
-    ```
-    Runs in parallel across hosts. Output for each host is written under
-    `script_outputs/<script_name>/` in this directory, and a per-host summary with return
-    codes is printed at the end. Use `--output-dir` to change the local output folder.
-    Optional flags: `--sudo=False`, `--timeout=120`, `--hosts-file=hosts.txt`, `--shell=sh`, `--dry-run`.
-
-## Module Testing
-
-This framework includes a powerful testing system for developing and validating individual hardening modules.
-
-*   **List Available Modules**:
-    ```bash
-    fab list-modules
-    ```
-
-*   **Test a Single Module (in dry-run mode)**:
-    ```bash
-    fab test-module --module=user_hardening
-    ```
-    Runs against all hosts in `hosts.txt` in parallel. Per-host logs are written to
-    `logs/test-module/<host>/<timestamp>.log`.
-
-*   **Test a Module in Live Mode**:
-    Use the `--live` flag to apply the changes.
-    ```bash
-    fab test-module --module=firewall_hardening --live
-    ```
-
-*   **Test All Modules**:
-    ```bash
-    fab test-all-modules
-    ```
-    Use `--host-index=<n>` to select the target host and `--live` to run changes instead of dry-run.
-
-## User Hardening
-
-The `user_hardening` module manages `sudo` privileges, sets passwords from `users.json` (generating and writing back any missing values), creates missing users defined in `users.json`, and locks unauthorized valid-shell accounts. Passwords used are recorded locally under `logs/user-hardening/<host>/passwords_<timestamp>.txt`. The default hardening pipeline does not include this module; run it via `fab test-module --module=user_hardening` or add it to the orchestrator. For more detailed information, please see the `README_user_hardening.md` file.
+**Discovery Only**
+Just gather facts without changing anything:
+```bash
+fab discover-all
+```
 
 ## Architecture
 
-*   **`fabfile.py`**: The main entry point for all Fabric tasks.
-*   **`utilities/`**: This directory contains the core logic of the framework.
-    *   **`discovery.py`**: The system discovery engine.
-    *   **`deployment.py`**: The hardening deployment engine.
-    *   **`actions.py`**: Shell-command builders for user and group management.
-    *   **`models.py`**: Data models for server and user information.
-    *   **`utils.py`**: Configuration loading, host parsing, and discovery summary helpers.
-    *   **`modules/`**: The directory containing all the individual hardening modules.
+*   **`fabfile.py`**: Entry point.
+*   **`utilities/modules/`**: detailed Python logic for each hardening step.
+*   **`scripts/all/`**: Bash scripts for raw system interaction (`lockdown.sh`, `archive_cronjobs.sh`).
 
 ## Contributing
 
-To add a new hardening module:
-
-1.  Create a new Python file in the `fabric_deploy/utilities/modules/` directory.
-2.  In your new file, create a class that inherits from `HardeningModule`.
-3.  Implement the `get_name` and `get_commands` methods.
-4.  Add your new module to the `__init__.py` file in the `modules` directory.
-5.  Test your module using the module testing framework.
+The easiest way to contribute is to add a posix compatible script to `/scripts/all/`
