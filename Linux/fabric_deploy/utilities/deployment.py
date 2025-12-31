@@ -186,38 +186,17 @@ class HardeningOrchestrator:
 
     def _execute_script_step(self, step: PipelineStep, dry_run: bool) -> List[HardeningResult]:
         """Execute a standalone script execution step"""
-        # We can leverage BashScriptHardeningModule logic or implement custom
-        # For now, let's try to use BashScriptHardeningModule's helper if we can access it
-        # Or simpler: create a temporary BashScriptHardeningModule?
-        
+
         script_path = step.target
-        # Handle arguments if any
-        # args might have 'env' or 'args'
-        
-        # To avoid duplicating logic, let's manually construct the commands 
-        # normally found in BashScriptHardeningModule but for one script
-        
-        # Determine local script path
-        # Assume relative to scripts root if not absolute
+
         if Path(script_path).is_absolute():
             local_path = Path(script_path)
         else:
-            # Assume relative to repo root or scripts dir? 
-            # Default pipeline uses 'scripts/all/...' which is relative to repo root
-            # But BashScriptHardeningModule uses self.scripts_base_path = Path(__file__).parent.parent.parent / "scripts"
-            # Actually, looking at file structure:
-            # fabric_deploy/utilities/deployment.py
-            # fabric_deploy/scripts/all/...
-            # So root is fabric_deploy which is parent.parent
             repo_root = Path(__file__).parent.parent
             local_path = repo_root / script_path
             
         if not local_path.exists():
             return [HardeningResult(False, script_path, "Load Script", error=f"File not found: {local_path}")]
-
-        # Reuse the existing bash module logic by temporarily instantiating one with this single script?
-        # But we need to handle special args (like --allow-internet).
-        # BashScriptHardeningModule doesn't support args per script yet.
         
         # Let's implement basic upload & run here
         results = []
@@ -243,8 +222,6 @@ class HardeningOrchestrator:
             if env_str:
                 cmd = f"{env_str} {cmd}"
             
-            # Run with logging
-            # Use a slightly different command structure than module to ensure we capture output
             full_cmd = f"mkdir -p /root/hardening-logs && {cmd} 2>&1 | tee {log_path}"
             
             logger.info(f"Running script: {full_cmd}")
@@ -280,15 +257,10 @@ class HardeningOrchestrator:
             try:
                 logger.info("Rebooting system...")
                 self.conn.sudo("reboot", warn=True)
-                # Fabric doesn't automatically wait for reboot?
-                # We need to wait for disconnect and then reconnect
+
                 logger.info("Waiting for system to go down...")
                 time.sleep(5) # Give it a moment to start shutting down
                 
-                # Re-establish connection?
-                # deployment.py is usually called within a 'with Connection()'.
-                # restarting the connection object is tricky if we don't own it.
-                # However, we can try to wait for it to come back using a loop?
                 logger.info("Waiting for system to come back (30s)...")
                 time.sleep(30) # Primitive wait
                 # TODO: Implement robust wait_for_ssh logic
@@ -298,8 +270,6 @@ class HardeningOrchestrator:
                 return [HardeningResult(True, "reboot", "System Reboot")]
                 
             except Exception as e:
-                # Reboot usually causes an exception on the command execution
-                # We might want to suppress it if it's "Connection closed"
                 logger.warning(f"Reboot triggered exception (expected): {e}")
                 
                  # Try to reconnect
@@ -319,20 +289,8 @@ class HardeningOrchestrator:
                 from .discovery import SystemDiscovery
                 logger.info("Re-running system discovery...")
                 discovery = SystemDiscovery(self.conn, self.server_info.credentials) # use creds from server_info?
-                # Need credentials. server_info has them?
-                # server_info has .credentials field? Yes, looking at models.py
                 new_info = discovery.discover_system()
-                # Update our server_info reference!
-                # Shallow copy attributes?
-                # self.server_info is a reference, if we update it, it reflects everywhere?
-                # But discover_system returns a NEW object usually.
-                # We should update self.server_info in place if possible or update self.server_info ref
                 self.server_info = new_info
-                # Also need to update modules with new info?
-                # Yes, modules hold reference to server_info.
-                # If we replaced the object, we need to update modules.
-                # But modules where initialized with OLD server_info.
-                # We need to re-initialize modules map or update their server_info.
                 for mod in self.modules_map.values():
                     mod.server_info = new_info
                 
