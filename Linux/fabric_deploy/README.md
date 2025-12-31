@@ -1,4 +1,4 @@
-**Concerned with ops? [Look at the workflow guide](workflow_guide.md)**
+**Concerned with ops? [Look at the workflow guide](docs/workflow_guide.md)**
 ---
 # CCDC Hardening Deployment Framework
 
