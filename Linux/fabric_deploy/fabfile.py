@@ -19,13 +19,14 @@ from datetime import datetime
 from pathlib import Path
 from fabric import Connection, Config
 from invoke import task
+from paramiko.ssh_exception import SSHException
 
 # Import modular components with error handling
 try:
     from utilities.models import ServerCredentials, ServerInfo
     from utilities.discovery import SystemDiscovery
     from utilities.deployment import HardeningDeployer
-    from utilities.utils import load_config, parse_hosts_file, save_discovery_summary, setup_logging
+    from utilities.utils import load_config, parse_hosts_file, save_discovery_summary, setup_logging, is_connection_reset
 except ImportError as e:
     print(f"Import error: {e}")
     print("Make sure you're running from the fabric_deploy directory")
@@ -93,6 +94,9 @@ def _host_label(server_creds):
     return label
 
 
+
+
+
 @contextmanager
 def _host_log_handler(task_name, host_label, timestamp):
     log_dir = Path("logs") / task_name / host_label
@@ -157,7 +161,10 @@ def discover(c, host, user=None, key_file=None, password=None):
             
             return server_info
     except Exception as e:
-        logger.error(f"Connection failed to {host}: {e}")
+        if is_connection_reset(e):
+            logger.error(f"Connection failed to {host}: Connection reset by peer (Firewall/Hostile Action)")
+        else:
+            logger.error(f"Connection failed to {host}: {e}")
         return None
 
 
@@ -260,7 +267,10 @@ def discover_all(c, hosts_file='hosts.txt'):
                 }
 
             except Exception as e:
-                logger.error(f"Discovery failed for {server_creds.host}: {e}")
+                if is_connection_reset(e):
+                     logger.error(f"Discovery failed for {server_creds.host}: Connection reset by peer")
+                else:
+                     logger.error(f"Discovery failed for {server_creds.host}: {e}")
                 server_info = ServerInfo(hostname=server_creds.host, credentials=server_creds)
                 server_info.discovery_successful = False
                 server_info.discovery_errors.append(str(e))
@@ -483,9 +493,12 @@ def harden(c, hosts_file='hosts.txt', dry_run=False, modules=None,
                     }
 
             except Exception as e:
-                logger.error(f"Hardening failed for {server_creds.host}: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
+                if is_connection_reset(e):
+                    logger.error(f"Hardening failed for {server_creds.host}: Connection reset by peer (Firewall/Hostile Action)")
+                else:
+                    logger.error(f"Hardening failed for {server_creds.host}: {e}")
+                    import traceback
+                    logger.error(traceback.format_exc())
                 return {
                     'host': server_creds.host,
                     'status': f'error: {e}',
@@ -562,7 +575,10 @@ def upload_tools(c, hosts_file='hosts.txt'):
                     _upload_tools_internal(conn)
                     return {'host': server_creds.host, 'status': 'ok'}
              except Exception as e:
-                 logger.error(f"Tools upload failed: {e}")
+                 if is_connection_reset(e):
+                     logger.error(f"Tools upload failed for {server_creds.host}: Connection reset by peer")
+                 else:
+                     logger.error(f"Tools upload failed: {e}")
                  return {'host': server_creds.host, 'status': 'failed'}
 
     with ThreadPoolExecutor(max_workers=len(servers)) as executor:
@@ -621,6 +637,101 @@ def deploy_scripts(c, hosts_file='hosts.txt', dry_run=False, categories=None, pr
     return harden(c, hosts_file=hosts_file, dry_run=dry_run,
                   modules='bash_scripts', script_categories=script_categories,
                   priority_only=priority_only)
+
+
+@task
+def reset_ssh(c, hosts_file='hosts.txt', restart=True):
+    """
+    Reset SSH configuration to the latest backup (Development Helper)
+    
+    Args:
+        hosts_file: Path to hosts file
+        restart: Whether to restart SSH service after reset (default: True)
+    """
+    _configure_parallel_logging()
+    console_logger = _get_console_logger()
+    
+    console_logger.info("=" * 60)
+    console_logger.info("RESETTING SSH CONFIGURATION FROM BACKUPS")
+    console_logger.info("=" * 60)
+    
+    servers = parse_hosts_file(hosts_file)
+    if not servers:
+        console_logger.error("No servers found")
+        return
+
+    def _reset_host(server_creds):
+        host_id = _host_label(server_creds)
+        with _host_log_handler("reset-ssh", host_id, datetime.now().strftime("%Y%m%d_%H%M%S")) as log_path:
+            try:
+                # Connection setup
+                connect_kwargs = {'allow_agent': False, 'look_for_keys': False}
+                config_overrides = {'sudo': {'password': None}}
+                if server_creds.key_file:
+                    connect_kwargs['key_filename'] = server_creds.key_file
+                elif server_creds.password:
+                    connect_kwargs['password'] = server_creds.password
+                    config_overrides['sudo']['password'] = server_creds.password
+                
+                if server_creds.port != 22:
+                    connect_kwargs['port'] = server_creds.port
+                
+                fabric_config = Config(overrides=config_overrides)
+                
+                with Connection(server_creds.host, user=server_creds.user,
+                               config=fabric_config, connect_kwargs=connect_kwargs) as conn:
+                    
+                    # 1. Find latest backup
+                    logger.info("Looking for latest sshd_config backup...")
+                    # listing files, sorting by time (newest first), picking first
+                    res = conn.sudo("ls -t /etc/ssh/sshd_config.backup.* 2>/dev/null | head -1", warn=True)
+                    
+                    if not res.ok or not res.stdout.strip():
+                        logger.warning("No backup files found. Skipping reset.")
+                        return {'host': server_creds.host, 'status': 'no-backup'}
+                    
+                    backup_file = res.stdout.strip()
+                    logger.info(f"Found backup: {backup_file}")
+                    
+                    # 2. Restore backup
+                    conn.sudo(f"cp {backup_file} /etc/ssh/sshd_config")
+                    logger.info("Restored backup to /etc/ssh/sshd_config")
+                    
+                    # 3. Restart Service
+                    if restart:
+                        logger.info("Restarting SSH service...")
+                        # Try common restart commands including Gentoo (OpenRC) and Slackware
+                        restart_cmd = (
+                            "service sshd restart || service ssh restart || "
+                            "systemctl restart sshd || systemctl restart ssh || "
+                            "/etc/init.d/ssh restart || /etc/init.d/sshd restart || "
+                            "/etc/rc.d/rc.sshd restart"
+                        )
+                        res = conn.sudo(restart_cmd, warn=True)
+                        if res.ok:
+                            logger.info("SSH service restarted successfully")
+                        else:
+                            host_identifier  = server_creds.friendly_name if server_creds.friendly_name else server_creds.host
+                            logger.error(f"Failed to restart SSH on host {host_identifier}: {res.stderr}")
+                            return {'host': server_creds.host, 'status': 'restart-failed'}
+                            
+                    return {'host': server_creds.host, 'status': 'ok'}
+
+            except Exception as e:
+                if is_connection_reset(e):
+                    logger.error(f"Reset failed for {server_creds.host}: Connection reset by peer")
+                else:
+                    logger.error(f"Reset failed: {e}")
+                return {'host': server_creds.host, 'status': 'failed'}
+
+    results = []
+    with ThreadPoolExecutor(max_workers=min(16, len(servers))) as executor:
+        futures = {executor.submit(_reset_host, s): s for s in servers}
+        for future in as_completed(futures):
+            results.append(future.result())
+
+    success = sum(1 for r in results if r['status'] == 'ok')
+    console_logger.info(f"Reset complete. Success: {success}/{len(servers)}")
 
 
 @task
@@ -796,7 +907,10 @@ def run_script(c, file, hosts_file='hosts.txt', sudo=True, timeout=300, output_d
                 }
 
         except Exception as e:
-            logger.error(f"{server_creds.display_name}: {e}")
+            if is_connection_reset(e):
+                logger.error(f"{server_creds.display_name}: Connection reset by peer (Firewall/Hostile Action)")
+            else:
+                logger.error(f"{server_creds.display_name}: {e}")
             _write_runbash_output(
                 output_file,
                 server_creds,
@@ -926,7 +1040,10 @@ def test_module(c, module, live=False):
                     'log_file': str(log_path)
                 }
             except Exception as e:
-                logger.error(f"Module test failed for {server_creds.host}: {e}")
+                if is_connection_reset(e):
+                    logger.error(f"Module test failed for {server_creds.host}: Connection reset by peer")
+                else:
+                    logger.error(f"Module test failed for {server_creds.host}: {e}")
                 return {
                     'host': server_creds.host,
                     'success': False,
