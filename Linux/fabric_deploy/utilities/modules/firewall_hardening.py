@@ -7,6 +7,7 @@ import logging
 import time
 from typing import List
 from fabric import Connection, Config
+from invoke.exceptions import CommandTimedOut, UnexpectedExit
 from .base import HardeningModule, HardeningCommand, PythonAction, HardeningResult
 from ..discovery import OSFamily
 
@@ -15,13 +16,8 @@ logger = logging.getLogger(__name__)
 # Hardcoded from lockdown.sh
 TRUSTED_IPS = [
     "203.0.113.10",
-    "198.51.100.7",
-    "192.0.2.25",
-    "192.0.2.26",
-    "198.51.100.42",
-    "203.0.113.77",
-    "203.0.113.78",
-    "198.51.100.99"
+    "198.51.100.99",
+    "10.0.0.2"
 ]
 
 class FirewallHardeningModule(HardeningModule):
@@ -245,25 +241,29 @@ class FirewallHardeningModule(HardeningModule):
     # --- Backend Specific Implementations ---
 
     def _apply_firewalld(self, conn):
-        # 1. Reload to clear old runtime junk
-        conn.sudo("firewall-cmd --reload", hide=True)
-        # 2. Set default zone drop
-        conn.sudo("firewall-cmd --set-default-zone=drop", hide=True)
-        # 3. Direct rules
-        # Loopback
-        conn.sudo("firewall-cmd --direct --add-rule ipv4 filter INPUT 0 -i lo -j ACCEPT", hide=True)
-        conn.sudo("firewall-cmd --direct --add-rule ipv4 filter OUTPUT 0 -o lo -j ACCEPT", hide=True)
-        
-        # Trusted IPs (Full Access)
-        for ip in TRUSTED_IPS:
-            conn.sudo(f"firewall-cmd --direct --add-rule ipv4 filter INPUT 0 -s {ip} -j ACCEPT", hide=True)
-            conn.sudo(f"firewall-cmd --direct --add-rule ipv4 filter OUTPUT 0 -d {ip} -j ACCEPT", hide=True)
+        try:
+            # 1. Reload to clear old runtime junk
+            conn.sudo("firewall-cmd --reload", hide=True, timeout=30)
             
-        # Drop all others (Rule 999)
-        conn.sudo("firewall-cmd --direct --add-rule ipv4 filter INPUT 999 -j DROP", hide=True)
-        conn.sudo("firewall-cmd --direct --add-rule ipv4 filter OUTPUT 999 -j DROP", hide=True)
-        
-        return HardeningResult(success=True, command="apply_firewalld", description="Applied firewalld rules", output="Direct rules applied")
+            # 2. Configure Trusted Zone
+            # Add loopback interface to trusted zone (try/except in case of issues)
+            conn.sudo("firewall-cmd --zone=trusted --add-interface=lo", warn=True, hide=True, timeout=30)
+            
+            # Add Trusted IPs to trusted zone
+            for ip in TRUSTED_IPS:
+                conn.sudo(f"firewall-cmd --zone=trusted --add-source={ip}", hide=True, timeout=30)
+            
+            # 3. Set Default Zone to Drop
+            # This is the dangerous step that might cut connection
+            conn.sudo("firewall-cmd --set-default-zone=drop", hide=True, timeout=10)
+            
+        except CommandTimedOut:
+            logger.warning("Firewall command timed out (likely connection severed by rules). Assuming success.")
+            return HardeningResult(success=True, command="apply_firewalld", description="Applied firewalld rules", output="Command timed out (Session severed)")
+        except Exception as e:
+            return HardeningResult(success=False, command="apply_firewalld", description="Applied firewalld rules", error=str(e))
+
+        return HardeningResult(success=True, command="apply_firewalld", description="Applied firewalld rules", output="Zone rules applied")
 
     def _apply_iptables(self, conn):
         cmds = [
@@ -285,7 +285,12 @@ class FirewallHardeningModule(HardeningModule):
         cmds.append("iptables -P OUTPUT DROP")
         
         full_cmd = " && ".join(cmds)
-        conn.sudo(full_cmd, hide=True)
+        try:
+            conn.sudo(full_cmd, hide=True, timeout=10)
+        except CommandTimedOut:
+             logger.warning("IPTables command timed out (likely connection severed).")
+             return HardeningResult(success=True, command="apply_iptables", description="Applied iptables rules", output="Command timed out (Session severed)")
+        
         return HardeningResult(success=True, command="apply_iptables", description="Applied iptables rules", output="Rules applied")
 
     def _apply_nft(self, conn):
@@ -303,7 +308,12 @@ class FirewallHardeningModule(HardeningModule):
             script.append(f"nft add rule inet filter output ip daddr {ip} accept")
             
         full_cmd = " && ".join([f"sh -c '{c}'" for c in script])
-        conn.sudo(full_cmd, hide=True)
+        try:
+            conn.sudo(full_cmd, hide=True, timeout=10)
+        except CommandTimedOut:
+            logger.warning("NFTables command timed out (likely connection severed).")
+            return HardeningResult(success=True, command="apply_nft", description="Applied nftables rules", output="Command timed out (Session severed)")
+            
         return HardeningResult(success=True, command="apply_nft", description="Applied nftables rules", output="Rules applied")
 
     def _apply_pf(self, conn):
@@ -323,27 +333,41 @@ block out all
 pass in from <trusted_ssh> to any no state
 pass out from any to <trusted_ssh> no state
 """
-        # Write config
-        conn.sudo(f"printf '%s' '{conf_content}' > {pf_conf}", hide=True)
-        # Apply
-        conn.sudo(f"pfctl -f {pf_conf}", hide=True)
-        conn.sudo("pfctl -e", warn=True, hide=True)
-        conn.sudo("pfctl -F state", warn=True, hide=True) # Flush states
+        try:
+            # Write config
+            conn.sudo(f"printf '%s' '{conf_content}' > {pf_conf}", hide=True)
+            # Apply
+            conn.sudo(f"pfctl -f {pf_conf}", hide=True, timeout=10)
+            conn.sudo("pfctl -e", warn=True, hide=True, timeout=10)
+            conn.sudo("pfctl -F state", warn=True, hide=True, timeout=10) # Flush states
+        except CommandTimedOut:
+            logger.warning("PF command timed out (likely connection severed).")
+            return HardeningResult(success=True, command="apply_pf", description="Applied PF rules", output="Command timed out (Session severed)")
+        except Exception as e:
+            return HardeningResult(success=False, command="apply_pf", description="Applied PF rules", error=str(e))
+
         
         return HardeningResult(success=True, command="apply_pf", description="Applied PF rules", output="PF rules loaded")
 
     def _apply_ipfw(self, conn):
-        conn.sudo("ipfw -q flush", hide=True)
-        conn.sudo("ipfw add 50 allow ip from any to any via lo0", hide=True)
-        
-        rule_id = 100
-        for ip in TRUSTED_IPS:
-            conn.sudo(f"ipfw add {rule_id} allow ip from {ip} to me in", hide=True)
-            conn.sudo(f"ipfw add {rule_id+1} allow ip from me to {ip} out", hide=True)
-            rule_id += 10
+        try:
+            conn.sudo("ipfw -q flush", hide=True, timeout=10)
+            conn.sudo("ipfw add 50 allow ip from any to any via lo0", hide=True, timeout=10)
             
-        # Deny rest
-        conn.sudo("ipfw add 65000 deny ip from any to any", hide=True)
+            rule_id = 100
+            for ip in TRUSTED_IPS:
+                conn.sudo(f"ipfw add {rule_id} allow ip from {ip} to me in", hide=True, timeout=10)
+                conn.sudo(f"ipfw add {rule_id+1} allow ip from me to {ip} out", hide=True, timeout=10)
+                rule_id += 10
+                
+            # Deny rest
+            conn.sudo("ipfw add 65000 deny ip from any to any", hide=True, timeout=10)
+        except CommandTimedOut:
+            logger.warning("IPFW command timed out (likely connection severed).")
+            return HardeningResult(success=True, command="apply_ipfw", description="Applied IPFW rules", output="Command timed out (Session severed)")
+        except Exception as e:
+            return HardeningResult(success=False, command="apply_ipfw", description="Applied IPFW rules", error=str(e))
+
         
         return HardeningResult(success=True, command="apply_ipfw", description="Applied IPFW rules", output="IPFW rules applied")
 
@@ -358,7 +382,7 @@ pass out from any to <trusted_ssh> no state
         key_file = getattr(server_info.credentials, 'key_file', None)
         
         # Prepare connectivity test
-        connect_kwargs = {'allow_agent': False, 'look_for_keys': False}
+        connect_kwargs = {'allow_agent': False, 'look_for_keys': False, 'timeout': 10}
         if key_file:
             connect_kwargs['key_filename'] = key_file
         if password:

@@ -59,7 +59,8 @@ def reset_ssh(c, hosts_file='hosts.txt', restart=True):
                     # 1. Find latest backup
                     logger.info("Looking for latest sshd_config backup...")
                     # listing files, sorting by time (newest first), picking first
-                    res = conn.sudo("ls -t /etc/ssh/sshd_config.backup.* 2>/dev/null | head -1", warn=True)
+                    # Updated to match the robust backup naming convention (sshd_config.fabric.backup)
+                    res = conn.sudo("ls -t /etc/ssh/sshd_config.fabric.backup* 2>/dev/null | head -1", warn=True)
                     
                     if not res.ok or not res.stdout.strip():
                         logger.warning("No backup files found. Skipping reset.")

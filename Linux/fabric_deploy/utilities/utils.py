@@ -223,7 +223,7 @@ def setup_logging(level: str = "INFO"):
 
 def generate_password() -> str:
     """Generate a password with 6 upper, 6 lower, and 4 symbols in random order."""
-    symbols = "!@#$%^&*()-_=+[]{}:,.?"
+    symbols = "!@#$%^&*()-_=+[]{}.,?"
     chars = (
         [secrets.choice(string.ascii_uppercase) for _ in range(6)]
         + [secrets.choice(string.ascii_lowercase) for _ in range(6)]
