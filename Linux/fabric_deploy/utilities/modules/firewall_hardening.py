@@ -100,13 +100,92 @@ class FirewallHardeningModule(HardeningModule):
         return commands
 
     def _identify_backend(self, conn, server_info):
+        # 1. Ensure tools are present
+        self._ensure_firewall_installed(conn, server_info)
+        
+        # 2. Detect
         self.active_backend = self._detect_backend(conn)
+        
+        # 3. Prepare (Set to "Open/Trusted" initially)
+        self._prepare_firewall(conn)
+
         return HardeningResult(
             success=True,
             command="identify_backend",
             description="Identified firewall backend",
             output=f"Backend: {self.active_backend}"
         )
+
+    def _ensure_firewall_installed(self, conn, server_info):
+        """Install and enable firewall service if missing (CentOS/OpenSUSE fix)"""
+        # Check if already running/detected
+        initial_backend = self._detect_backend(conn)
+        if initial_backend != "unknown":
+            logger.info(f"Firewall backend {initial_backend} already detected.")
+            return
+
+        pms = server_info.package_managers
+        cmd = None
+        service = None
+
+        if "dnf" in pms:
+            cmd = "dnf install -y firewalld"
+            service = "firewalld"
+        elif "yum" in pms:
+            cmd = "yum install -y firewalld"
+            service = "firewalld"
+        elif "zypper" in pms:
+            cmd = "zypper --non-interactive install firewalld"
+            service = "firewalld"
+        elif "apt" in pms:
+            # Debian/Ubuntu usually have ufw
+            cmd = "DEBIAN_FRONTEND=noninteractive apt-get install -y ufw"
+            service = "ufw"
+        elif "apk" in pms:
+             # Alpine usually uses nftables or iptables; ensuring nftables is installed
+             cmd = "apk add nftables"
+             service = "nftables"
+
+        if cmd:
+            logger.info(f"Installing firewall tools: {cmd}")
+            conn.sudo(cmd, hide=True)
+            if service:
+                # Some containers/distros might not have systemd, check first
+                if conn.run("command -v systemctl", warn=True, hide=True).ok:
+                    logger.info(f"Enabling {service} service...")
+                    conn.sudo(f"systemctl unmask {service}", warn=True, hide=True)
+                    conn.sudo(f"systemctl enable --now {service}", warn=True, hide=True)
+                    time.sleep(3) # Give it moment to initialize
+                # Fallback for Alpine/OpenRC
+                elif conn.run("command -v rc-service", warn=True, hide=True).ok:
+                     conn.sudo(f"rc-service {service} start", warn=True, hide=True)
+                     conn.sudo(f"rc-update add {service}", warn=True, hide=True)
+
+    def _prepare_firewall(self, conn):
+        """Set firewall to OPEN/TRUSTED state before locking down (Plumbing fix)"""
+        if not self.active_backend or self.active_backend == "unknown":
+            return
+
+        logger.info(f"Preparing {self.active_backend} (Setting to ALLOW ALL)...")
+        try:
+            if self.active_backend == "firewalld":
+                conn.sudo("firewall-cmd --set-default-zone=trusted", hide=True)
+                conn.sudo("firewall-cmd --reload", hide=True)
+            elif self.active_backend == "ufw":
+                conn.sudo("ufw default allow incoming", hide=True)
+                conn.sudo("ufw default allow outgoing", hide=True)
+                conn.sudo("echo 'y' | ufw enable", hide=True)
+            elif self.active_backend == "iptables":
+                conn.sudo("iptables -P INPUT ACCEPT", hide=True)
+                conn.sudo("iptables -P OUTPUT ACCEPT", hide=True)
+                conn.sudo("iptables -F", hide=True)
+            elif self.active_backend == "nft":
+                conn.sudo("nft flush ruleset", hide=True)
+            elif self.active_backend == "pf":
+                conn.sudo("pfctl -d", warn=True, hide=True)
+            # ipfw usually default deny, we leave it alone until apply
+        except Exception as e:
+            logger.warning(f"Failed to prepare firewall: {e}")
 
     def _arm_dead_mans_switch(self, conn, server_info):
         """Start a background process that flushes firewalls after 60s unless killed"""
@@ -117,7 +196,8 @@ class FirewallHardeningModule(HardeningModule):
         if self.active_backend == "iptables":
             revert_cmd = "iptables -F && iptables -P INPUT ACCEPT && iptables -P OUTPUT ACCEPT"
         elif self.active_backend == "firewalld":
-            revert_cmd = "firewall-cmd --reload" # Reloads permanent config (assumed safer than runtime lock)
+            # Fix: set back to trusted so reload restores an open state
+            revert_cmd = "firewall-cmd --set-default-zone=trusted && firewall-cmd --reload"
         elif self.active_backend == "nft":
             revert_cmd = "nft flush ruleset"
         elif self.active_backend == "pf":
