@@ -339,7 +339,7 @@ class ModuleTester:
             raise TimeoutError(f"Action timed out after {timeout} seconds")
 
         if threading.current_thread() is not threading.main_thread():
-            logger.warning("Timeout disabled (non-main thread)")
+            # logger.warning("Timeout disabled (non-main thread)")
             return module_instance.apply_action(action)
         
         # Set up timeout for non-dry runs

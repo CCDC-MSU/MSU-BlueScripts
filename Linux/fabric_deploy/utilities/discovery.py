@@ -30,6 +30,7 @@ class OSFamily(Enum):
     DARWIN = "darwin"
     UNKNOWN = "unknown"
     BSDGENERIC = "bsd_generic"
+    SLACKWARE = "slackware"
 
 @dataclass
 class CommandResult:
@@ -324,6 +325,7 @@ class SystemDiscovery:
             '/etc/alpine-release': (OSFamily.ALPINE, 'Alpine'),
             '/etc/arch-release': (OSFamily.ARCH, 'Arch'),
             '/etc/SuSE-release': (OSFamily.SUSE, 'SUSE'),
+            '/etc/slackware-version': (OSFamily.SLACKWARE, 'Slackware'),
         }
         
         for file_path, (family, name) in distro_files.items():
