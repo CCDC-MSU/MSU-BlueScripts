@@ -12,8 +12,29 @@ from typing import List
 import yaml
 from .models import ServerCredentials
 import re
+import socket
+from paramiko.ssh_exception import SSHException
 
 logger = logging.getLogger(__name__)
+
+
+def is_connection_reset(e):
+    """Check if exception is a connection reset (host hostile or blocking)"""
+    # Check for direct types
+    if isinstance(e, (EOFError, socket.error, ConnectionResetError)):
+        return True
+        
+    msg = str(e).lower()
+    # Check for ConnectionResetError or similar OS errors via message
+    if "connection reset by peer" in msg or "Errno 104" in msg or "errno 10054" in msg:
+        return True
+    
+    # Check for wrapped SSHException
+    if isinstance(e, SSHException):
+        if "connection reset" in msg or "eof" in msg:
+            return True
+            
+    return False
 
 
 def load_config(config_file: str = None) -> dict:

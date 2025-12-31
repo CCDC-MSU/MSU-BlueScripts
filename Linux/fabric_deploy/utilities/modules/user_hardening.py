@@ -13,7 +13,7 @@ from typing import Dict, List, Set, Tuple
 
 from .base import HardeningModule, HardeningCommand, PythonAction, HardeningResult
 from ..actions import UserManager
-from ..utils import generate_password
+from ..utils import generate_password, is_connection_reset
 
 logger = logging.getLogger(__name__)
 
@@ -294,8 +294,12 @@ class UserHardeningModule(HardeningModule):
             return HardeningResult(True, "configure_root_access", "Configure Root Access", output=action_output)
 
         except Exception as e:
-            logger.error(f"Failed to configure root access: {e}")
-            return HardeningResult(False, "configure_root_access", "Configure Root Access", error=str(e))
+            if is_connection_reset(e):
+                error_msg = "Connection reset by peer (Firewall/Hostile Action)"
+            else:
+                error_msg = str(e)
+            logger.error(f"Failed to configure root access: {error_msg}")
+            return HardeningResult(False, "configure_root_access", "Configure Root Access", error=error_msg)
 
     def get_commands(self) -> List[HardeningCommand]:
         commands: List[HardeningCommand] = []

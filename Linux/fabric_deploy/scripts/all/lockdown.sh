@@ -9,10 +9,7 @@ SSH_PORT=22
 TRUSTED_IPS="
 203.0.113.10
 198.51.100.7
-192.0.2.25
-192.0.2.26
-198.51.100.42
-203.0.113.77
+10.0.0.3
 203.0.113.78
 198.51.100.99
 "
@@ -30,7 +27,7 @@ case "${1:-}" in
   --lockdown|-l|"")    MODE="lockdown" ;;
   --help|-h)
     echo "Usage:"
-    echo "  $0                 # lockdown (SSH-only, no new outbound; SSH/loopback stateless)"
+    echo "  $0                 # lockdown (Trusted IPs full access, no new outbound; Trusted/loopback stateless)"
     echo "  $0 --allow-internet  # allow outbound updates (stateful) while inbound stays locked"
     exit 0
     ;;
@@ -87,7 +84,7 @@ for ip in $TRUSTED_IPS_NORM; do
 done
 
 echo "MODE: $MODE"
-echo "SSH allowed only from trusted IPs on port $SSH_PORT:"
+echo "Full access allowed from trusted IPs:"
 for ip in $TRUSTED_IPS_NORM; do echo "  - $ip"; done
 echo "WARNING: Applying rules in 10 seconds. Ctrl+C to abort."
 sleep 10
@@ -165,11 +162,11 @@ apply_firewalld() {
   run_cmd firewall-cmd --direct --add-rule ipv4 filter INPUT 0 -i lo -j ACCEPT
   run_cmd firewall-cmd --direct --add-rule ipv4 filter OUTPUT 0 -o lo -j ACCEPT
 
-  # SSH (Stateless - allows surviving state flush effectively)
+  # Trusted IPs (Stateless - allows surviving state flush effectively)
   # Note: Direct rules bypass zones.
   for ip in $TRUSTED_IPS_NORM; do
-    run_cmd firewall-cmd --direct --add-rule ipv4 filter INPUT 0 -p tcp -s "$ip" --dport "$SSH_PORT" -j ACCEPT
-    run_cmd firewall-cmd --direct --add-rule ipv4 filter OUTPUT 0 -p tcp -d "$ip" --sport "$SSH_PORT" -j ACCEPT
+    run_cmd firewall-cmd --direct --add-rule ipv4 filter INPUT 0 -s "$ip" -j ACCEPT
+    run_cmd firewall-cmd --direct --add-rule ipv4 filter OUTPUT 0 -d "$ip" -j ACCEPT
   done
 
   if [ "$MODE" = "allow_internet" ]; then
@@ -225,10 +222,10 @@ apply_iptables() {
   run_cmd iptables -A INPUT  -i lo -j ACCEPT
   run_cmd iptables -A OUTPUT -o lo -j ACCEPT
 
-  # SSH (stateless): allow both directions explicitly, NO conntrack.
+  # Trusted IPs (stateless): allow both directions explicitly, NO conntrack.
   for ip in $TRUSTED_IPS_NORM; do
-    run_cmd iptables -A INPUT  -p tcp -s "$ip" --dport "$SSH_PORT" -j ACCEPT
-    run_cmd iptables -A OUTPUT -p tcp -d "$ip" --sport "$SSH_PORT" -j ACCEPT
+    run_cmd iptables -A INPUT  -s "$ip" -j ACCEPT
+    run_cmd iptables -A OUTPUT -d "$ip" -j ACCEPT
   done
 
   if [ "$MODE" = "allow_internet" ]; then
@@ -282,10 +279,10 @@ apply_nft() {
   run_cmd nft add rule inet filter input  iif lo accept
   run_cmd nft add rule inet filter output oif lo accept
 
-  # SSH (stateless): allow both directions explicitly
+  # Trusted IPs (stateless): allow both directions explicitly
   for ip in $TRUSTED_IPS_NORM; do
-    run_cmd nft add rule inet filter input  ip saddr "$ip" tcp dport "$SSH_PORT" accept
-    run_cmd nft add rule inet filter output ip daddr "$ip" tcp sport "$SSH_PORT" accept
+    run_cmd nft add rule inet filter input  ip saddr "$ip" accept
+    run_cmd nft add rule inet filter output ip daddr "$ip" accept
   done
 
   if [ "$MODE" = "allow_internet" ]; then
@@ -343,8 +340,8 @@ block log in all
 block log out all
 
 # SSH stateless (no state) + explicit return path
-pass in  proto tcp from <trusted_ssh> to any port $SSH_PORT no state
-pass out proto tcp from any port $SSH_PORT to <trusted_ssh> no state
+pass in  from <trusted_ssh> to any no state
+pass out from any to <trusted_ssh> no state
 
 # Outbound updates stateful
 pass out proto { udp tcp } to any port 53 keep state
@@ -365,8 +362,8 @@ block log in all
 block log out all
 
 # SSH stateless (no state) + explicit return path
-pass in  proto tcp from <trusted_ssh> to any port $SSH_PORT no state
-pass out proto tcp from any port $SSH_PORT to <trusted_ssh> no state
+pass in  from <trusted_ssh> to any no state
+pass out from any to <trusted_ssh> no state
 EOF
   fi
 
@@ -396,11 +393,11 @@ apply_ipfw() {
   # Loopback (stateless)
   run_cmd ipfw add 50 allow ip from any to any via lo0
 
-  # SSH stateless: allow both directions explicitly
+  # Trusted IPs stateless: allow both directions explicitly
   rule=100
   for ip in $TRUSTED_IPS_NORM; do
-    run_cmd ipfw add "$rule"       allow tcp from "$ip" to me "$SSH_PORT" in
-    run_cmd ipfw add "$((rule+1))" allow tcp from me "$SSH_PORT" to "$ip" out
+    run_cmd ipfw add "$rule"       allow ip from "$ip" to me in
+    run_cmd ipfw add "$((rule+1))" allow ip from me to "$ip" out
     rule=$((rule + 10))
   done
 
@@ -437,7 +434,7 @@ apply_tcp_wrappers() {
   [ -f /etc/hosts.allow ] && run_cmd cp /etc/hosts.allow /etc/hosts.allow.bak."$(date +%s)"
 
   run_cmd sh -c 'echo "ALL: ALL" > /etc/hosts.deny'
-  run_cmd sh -c "echo \"sshd: $TRUSTED_IPS_NORM\" > /etc/hosts.allow"
+  run_cmd sh -c "echo \"ALL: $TRUSTED_IPS_NORM\" > /etc/hosts.allow"
   return 0
 }
 
