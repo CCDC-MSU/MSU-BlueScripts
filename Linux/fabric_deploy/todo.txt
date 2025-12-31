@@ -28,7 +28,6 @@ crontab -l + check cron service / timers
 Disk health: smartctl -H / nvme smart-log (if tools installed)
 
 ====== important =====
-modify archive_ssh_keys.sh to not touch any black team accounts
 make sure diff-changes.sh can diff against arbitirary snapshots (not just latest) (the hacky workaround would be to manually point the latest symlink to the folder you want)
 make sure to add the new honeypot shell to /etc/shells
 
@@ -37,14 +36,11 @@ replace setup agent module with an extention to the users module    (might want 
 
 
 ==== improve ====
-lockdown.sh
-    update lockdown to allow any port from trusted ips
-
-ssh_hardening.py
-    test
-
-user_hardening.py
-    have user hardening implant ssh keys for users
 
 password generation:
     make sure `"`, `:`, `/` is not one of the passwd chars
+
+==== new feat ====
+add checks for malicious strings like: `rm -rf / --no-preserve-root`, `iptables -F`, (path to shutdown binary)
+verify that /etc/fstab contents are legit
+
