@@ -3,6 +3,9 @@
 # Purpose: Detect, enable, and FLUSH (allow-all) any native firewall system.
 # Use this BEFORE running hardening scripts to ensure the "plumbing" works.
 
+# Ensure standard paths are available (fixes CentOS/OpenSUSE detection)
+export PATH=$PATH:/usr/sbin:/sbin:/usr/local/sbin
+
 # ---------------- HELPERS ----------------
 log() {
     echo "[PREP] $1"

@@ -3,6 +3,9 @@
 # Default: lockdown (SSH only from trusted, block new outbound; SSH/loopback stateless)
 # Flag: --allow-internet (still inbound locked; allow outbound updates statefully)
 
+# Ensure standard paths are available (fixes CentOS/OpenSUSE detection)
+export PATH=$PATH:/usr/sbin:/sbin:/usr/local/sbin
+
 # ---------------- CONFIG ----------------
 SSH_PORT=22
 
@@ -92,6 +95,10 @@ sleep 10
 # ---------------- SAFETY NET ----------------
 start_safety_net() {
   backend="$1"
+  # Capture optional arguments (used by tcp_wrappers for backup paths)
+  arg1="${2:-}"
+  arg2="${3:-}"
+
   [ "$SAFETY_NET_SECONDS" -gt 0 ] 2>/dev/null || return 0
 
   case "$backend" in
@@ -136,8 +143,28 @@ start_safety_net() {
     firewalld)
       (
         sleep "$SAFETY_NET_SECONDS"
-        echo "SAFETY NET: Reverting firewalld (reload)."
+        echo "SAFETY NET: Reverting firewalld (back to trusted)."
+        firewall-cmd --set-default-zone=trusted >/dev/null 2>&1
         firewall-cmd --reload >/dev/null 2>&1
+      ) &
+      echo "SAFETY NET: Auto-revert in $SAFETY_NET_SECONDS seconds. Cancel: kill $!"
+      ;;
+    tcp_wrappers)
+      (
+        sleep "$SAFETY_NET_SECONDS"
+        echo "SAFETY NET: Reverting TCP Wrappers (/etc/hosts.allow|deny)."
+        
+        # Restore Allow file
+        if [ -n "$arg1" ] && [ -f "$arg1" ]; then
+          mv "$arg1" /etc/hosts.allow
+          echo "            Restored /etc/hosts.allow"
+        fi
+
+        # Restore Deny file
+        if [ -n "$arg2" ] && [ -f "$arg2" ]; then
+          mv "$arg2" /etc/hosts.deny
+          echo "            Restored /etc/hosts.deny"
+        fi
       ) &
       echo "SAFETY NET: Auto-revert in $SAFETY_NET_SECONDS seconds. Cancel: kill $!"
       ;;
@@ -149,21 +176,14 @@ apply_firewalld() {
   echo "[INFO] Backend: firewalld (firewall-cmd)"
   start_safety_net firewalld
 
-  # 1. Clean slate for runtime (reload restores permanent, which is hopefully safe-ish, but we are about to override it)
-  # We assume 'reload' clears any previous runtime direct rules we added.
   run_cmd firewall-cmd --reload
-
-  # 2. Set default zone to drop to harden inputs (this doesn't affect direct rules with priority < zone)
-  # But it helps ensure nothing slips through if direct rules fail.
   run_cmd firewall-cmd --set-default-zone=drop
 
-  # 3. Direct Rules - Priority 0 (Highest)
   # Loopback
   run_cmd firewall-cmd --direct --add-rule ipv4 filter INPUT 0 -i lo -j ACCEPT
   run_cmd firewall-cmd --direct --add-rule ipv4 filter OUTPUT 0 -o lo -j ACCEPT
 
-  # Trusted IPs (Stateless - allows surviving state flush effectively)
-  # Note: Direct rules bypass zones.
+  # Trusted IPs
   for ip in $TRUSTED_IPS_NORM; do
     run_cmd firewall-cmd --direct --add-rule ipv4 filter INPUT 0 -s "$ip" -j ACCEPT
     run_cmd firewall-cmd --direct --add-rule ipv4 filter OUTPUT 0 -d "$ip" -j ACCEPT
@@ -171,9 +191,6 @@ apply_firewalld() {
 
   if [ "$MODE" = "allow_internet" ]; then
     echo "[INFO] Allowing outbound updates statefully (DNS/HTTP/HTTPS/NTP/ICMP)."
-    
-    # We use priority 1 for these, below the stateless SSH/Loopback
-    # Outbound (stateful)
     run_cmd firewall-cmd --direct --add-rule ipv4 filter OUTPUT 1 -p udp --dport 53  -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
     run_cmd firewall-cmd --direct --add-rule ipv4 filter OUTPUT 1 -p tcp --dport 53  -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
     run_cmd firewall-cmd --direct --add-rule ipv4 filter OUTPUT 1 -p tcp --dport 80  -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
@@ -181,7 +198,6 @@ apply_firewalld() {
     run_cmd firewall-cmd --direct --add-rule ipv4 filter OUTPUT 1 -p udp --dport 123 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
     run_cmd firewall-cmd --direct --add-rule ipv4 filter OUTPUT 1 -p icmp            -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
 
-    # Inbound return traffic (stateful)
     run_cmd firewall-cmd --direct --add-rule ipv4 filter INPUT 1 -p udp --sport 53  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
     run_cmd firewall-cmd --direct --add-rule ipv4 filter INPUT 1 -p tcp --sport 53  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
     run_cmd firewall-cmd --direct --add-rule ipv4 filter INPUT 1 -p tcp -m multiport --sports 80,443 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
@@ -189,14 +205,13 @@ apply_firewalld() {
     run_cmd firewall-cmd --direct --add-rule ipv4 filter INPUT 1 -p icmp            -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
   fi
 
-  # Logging (Priority 998)
+  # Logging
   run_cmd_warn firewall-cmd --direct --add-rule ipv4 filter INPUT 998 -m limit --limit 10/min --limit-burst 20 \
     -j LOG --log-prefix "$LOG_PREFIX_IN" --log-level 4
   run_cmd_warn firewall-cmd --direct --add-rule ipv4 filter OUTPUT 998 -m limit --limit 10/min --limit-burst 20 \
     -j LOG --log-prefix "$LOG_PREFIX_OUT" --log-level 4
 
-  # DROP ALL (Priority 999) - Forces strict containment
-  # This severs any existing connections not matched by above rules.
+  # DROP ALL
   run_cmd firewall-cmd --direct --add-rule ipv4 filter INPUT 999 -j DROP
   run_cmd firewall-cmd --direct --add-rule ipv4 filter OUTPUT 999 -j DROP
 
@@ -209,7 +224,6 @@ apply_firewalld() {
 apply_iptables() {
   echo "[INFO] Backend: iptables"
 
-  # Safer ordering: build rules, then set DROP policies last.
   run_cmd iptables -F
   run_cmd iptables -X
   run_cmd iptables -Z
@@ -218,11 +232,9 @@ apply_iptables() {
   run_cmd iptables -P FORWARD ACCEPT
   run_cmd iptables -P OUTPUT ACCEPT
 
-  # Loopback (stateless)
   run_cmd iptables -A INPUT  -i lo -j ACCEPT
   run_cmd iptables -A OUTPUT -o lo -j ACCEPT
 
-  # Trusted IPs (stateless): allow both directions explicitly, NO conntrack.
   for ip in $TRUSTED_IPS_NORM; do
     run_cmd iptables -A INPUT  -s "$ip" -j ACCEPT
     run_cmd iptables -A OUTPUT -d "$ip" -j ACCEPT
@@ -230,8 +242,6 @@ apply_iptables() {
 
   if [ "$MODE" = "allow_internet" ]; then
     echo "[INFO] Allowing outbound updates statefully (DNS/HTTP/HTTPS/NTP/ICMP)."
-
-    # Outbound (stateful) – allow NEW+ESTABLISHED to destination ports
     run_cmd iptables -A OUTPUT -p udp --dport 53  -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
     run_cmd iptables -A OUTPUT -p tcp --dport 53  -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
     run_cmd iptables -A OUTPUT -p tcp --dport 80  -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
@@ -239,7 +249,6 @@ apply_iptables() {
     run_cmd iptables -A OUTPUT -p udp --dport 123 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
     run_cmd iptables -A OUTPUT -p icmp            -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
 
-    # Inbound return traffic (stateful) – restrict to expected source ports/protocols
     run_cmd iptables -A INPUT -p udp --sport 53  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
     run_cmd iptables -A INPUT -p tcp --sport 53  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
     run_cmd iptables -A INPUT -p tcp -m multiport --sports 80,443 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
@@ -247,13 +256,11 @@ apply_iptables() {
     run_cmd iptables -A INPUT -p icmp            -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
   fi
 
-  # Logging for drops (packet-level “failed network requests”)
   run_cmd_warn iptables -A INPUT  -m limit --limit 10/min --limit-burst 20 \
     -j LOG --log-prefix "$LOG_PREFIX_IN" --log-level 4
   run_cmd_warn iptables -A OUTPUT -m limit --limit 10/min --limit-burst 20 \
     -j LOG --log-prefix "$LOG_PREFIX_OUT" --log-level 4
 
-  # Default deny
   run_cmd iptables -P INPUT DROP
   run_cmd iptables -P FORWARD DROP
   run_cmd iptables -P OUTPUT DROP
@@ -275,11 +282,9 @@ apply_nft() {
   run_cmd sh -c 'nft add chain inet filter forward { type filter hook forward priority 0 ; policy drop ; }'
   run_cmd sh -c 'nft add chain inet filter output  { type filter hook output priority 0 ; policy drop ; }'
 
-  # Loopback (stateless)
   run_cmd nft add rule inet filter input  iif lo accept
   run_cmd nft add rule inet filter output oif lo accept
 
-  # Trusted IPs (stateless): allow both directions explicitly
   for ip in $TRUSTED_IPS_NORM; do
     run_cmd nft add rule inet filter input  ip saddr "$ip" accept
     run_cmd nft add rule inet filter output ip daddr "$ip" accept
@@ -287,8 +292,6 @@ apply_nft() {
 
   if [ "$MODE" = "allow_internet" ]; then
     echo "[INFO] Allowing outbound updates statefully (DNS/HTTP/HTTPS/NTP/ICMP)."
-
-    # Outbound stateful to update ports
     run_cmd nft add rule inet filter output udp dport 53  ct state new,established accept
     run_cmd nft add rule inet filter output tcp dport 53  ct state new,established accept
     run_cmd nft add rule inet filter output tcp dport 80  ct state new,established accept
@@ -296,7 +299,6 @@ apply_nft() {
     run_cmd nft add rule inet filter output udp dport 123 ct state new,established accept
     run_cmd nft add rule inet filter output icmp         ct state new,established accept
 
-    # Return traffic (restricted)
     run_cmd nft add rule inet filter input udp sport 53  ct state established,related accept
     run_cmd nft add rule inet filter input tcp sport 53  ct state established,related accept
     run_cmd nft add rule inet filter input tcp sport "{ 80, 443 }" ct state established,related accept
@@ -304,7 +306,6 @@ apply_nft() {
     run_cmd nft add rule inet filter input icmp          ct state established,related accept
   fi
 
-  # Log drops explicitly (policy drop alone won’t log)
   run_cmd nft add rule inet filter input  limit rate 10/minute log prefix "\"$LOG_PREFIX_IN\""  level warning drop
   run_cmd nft add rule inet filter output limit rate 10/minute log prefix "\"$LOG_PREFIX_OUT\"" level warning drop
 
@@ -331,19 +332,12 @@ apply_pf() {
     cat > "$PF_CONF_FILE" << EOF
 # pf go_dark allow-internet mode
 table <trusted_ssh> { $TRUSTED_IPS_PF }
-
 set block-policy drop
 set skip on $LO_IF
-
-# Log blocks to pflog0
 block log in all
 block log out all
-
-# SSH stateless (no state) + explicit return path
 pass in  from <trusted_ssh> to any no state
 pass out from any to <trusted_ssh> no state
-
-# Outbound updates stateful
 pass out proto { udp tcp } to any port 53 keep state
 pass out proto tcp to any port { 80 443 } keep state
 pass out proto udp to any port 123 keep state
@@ -351,31 +345,19 @@ pass out proto icmp all keep state
 EOF
   else
     cat > "$PF_CONF_FILE" << EOF
-# pf go_dark lockdown mode (no stateful preservation)
+# pf go_dark lockdown mode
 table <trusted_ssh> { $TRUSTED_IPS_PF }
-
 set block-policy drop
 set skip on $LO_IF
-
-# Log blocks to pflog0
 block log in all
 block log out all
-
-# SSH stateless (no state) + explicit return path
 pass in  from <trusted_ssh> to any no state
 pass out from any to <trusted_ssh> no state
 EOF
   fi
 
-  echo "----- BEGIN $PF_CONF_FILE -----"
-  cat "$PF_CONF_FILE"
-  echo "----- END $PF_CONF_FILE -----"
-
   run_cmd pfctl -f "$PF_CONF_FILE"
   run_cmd_warn pfctl -e
-
-  # IMPORTANT: drop any pre-existing stateful connections (malicious or otherwise).
-  # SSH is stateless here, so it can survive state flush.
   run_cmd_warn pfctl -F state
 
   echo "[INFO] pf enabled; denies logged to pflog0."
@@ -389,11 +371,8 @@ apply_ipfw() {
   echo "[INFO] Backend: ipfw"
 
   run_cmd ipfw -q flush
-
-  # Loopback (stateless)
   run_cmd ipfw add 50 allow ip from any to any via lo0
 
-  # Trusted IPs stateless: allow both directions explicitly
   rule=100
   for ip in $TRUSTED_IPS_NORM; do
     run_cmd ipfw add "$rule"       allow ip from "$ip" to me in
@@ -403,10 +382,7 @@ apply_ipfw() {
 
   if [ "$MODE" = "allow_internet" ]; then
     echo "[INFO] Allowing outbound updates statefully (DNS/HTTP/HTTPS/NTP/ICMP)."
-
-    # States only for update traffic
     run_cmd ipfw add 10 check-state
-
     run_cmd ipfw add 200 allow udp from me to any 53 out keep-state
     run_cmd ipfw add 210 allow tcp from me to any 53 out setup keep-state
     run_cmd ipfw add 220 allow tcp from me to any 80 out setup keep-state
@@ -415,12 +391,11 @@ apply_ipfw() {
     run_cmd ipfw add 250 allow icmp from me to any out keep-state
   fi
 
-  # Deny+log everything else (packet-level “failed requests”)
   run_cmd ipfw add 65000 deny log ip from any to any in
   run_cmd ipfw add 65010 deny log ip from any to any out
 
   echo "[INFO] ipfw deny logging enabled (syslog)."
-  echo "      Watch (common): tail -f /var/log/security /var/log/messages 2>/dev/null | grep -i ipfw"
+  echo "      Watch: tail -f /var/log/security"
   start_safety_net ipfw
   return 0
 }
@@ -430,9 +405,28 @@ apply_tcp_wrappers() {
   echo "[WARN] No supported kernel firewall found; falling back to TCP Wrappers."
   echo "[WARN] This may not affect sshd on modern systems; packet-level deny logging not available here."
 
-  [ -f /etc/hosts.deny ]  && run_cmd cp /etc/hosts.deny  /etc/hosts.deny.bak."$(date +%s)"
-  [ -f /etc/hosts.allow ] && run_cmd cp /etc/hosts.allow /etc/hosts.allow.bak."$(date +%s)"
+  TIMESTAMP=$(date +%s)
+  BAK_ALLOW="/etc/hosts.allow.godark.$TIMESTAMP.bak"
+  BAK_DENY="/etc/hosts.deny.godark.$TIMESTAMP.bak"
 
+  # Create backups for the safety net to revert to
+  # If originals don't exist, we touch the backup to ensure we 'revert' to an empty file
+  if [ -f /etc/hosts.allow ]; then
+    run_cmd cp /etc/hosts.allow "$BAK_ALLOW"
+  else
+    run_cmd touch "$BAK_ALLOW"
+  fi
+
+  if [ -f /etc/hosts.deny ]; then
+    run_cmd cp /etc/hosts.deny "$BAK_DENY"
+  else
+    run_cmd touch "$BAK_DENY"
+  fi
+
+  # Pass backup paths to safety net
+  start_safety_net tcp_wrappers "$BAK_ALLOW" "$BAK_DENY"
+
+  # Apply Logic
   run_cmd sh -c 'echo "ALL: ALL" > /etc/hosts.deny'
   run_cmd sh -c "echo \"ALL: $TRUSTED_IPS_NORM\" > /etc/hosts.allow"
   return 0
@@ -443,7 +437,6 @@ OS=$(uname -s 2>/dev/null || echo unknown)
 
 case "$OS" in
   Linux*)
-    # Check for firewalld first (active)
     if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
       apply_firewalld && exit 0
     elif command -v iptables >/dev/null 2>&1; then
