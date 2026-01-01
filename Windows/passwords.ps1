@@ -21,7 +21,7 @@ function Generate-RandomPassword {
 
 # Local User passwords
 if (!(Get-WmiObject -Query "select * from Win32_OperatingSystem where ProductType='2'")) {
-    # $outputFile = "C:\Users\Administrator\Documents\passwords_output.txt"
+    $outputFile = "C:\Users\Administrator\Documents\passwords_output.txt"
     Write-Output $env:COMPUTERNAME
     Get-WmiObject -Class Win32_UserAccount -Filter "LocalAccount = True" | ForEach-Object {
         if ($_.Disabled -eq $false) {
@@ -33,7 +33,7 @@ if (!(Get-WmiObject -Query "select * from Win32_OperatingSystem where ProductTyp
                 Write-Host "Failed to change password for $username" -ForegroundColor Red
             }
             try{
-                # "$username,$password" | Out-File -FilePath $outputFile -Append -Encoding UTF8
+                "$username,$password" | Out-File -FilePath $outputFile -Append -Encoding UTF8
                 Write-Output "$username,$password"
             }catch{
                 Write-Host "Failed to write password in file for $username" -ForegroundColor Red
@@ -50,7 +50,7 @@ else {
 # Domain-User Passwords
 if (Get-WmiObject -Query "select * from Win32_OperatingSystem where ProductType='2'") {
 
-    # $outputFilePath = "C:\Users\Administrator\Documents\passwords_output.txt"
+    $outputFilePath = "C:\Users\Administrator\Documents\passwords_output.txt"
     Write-Output $env:ComputerName
     Import-Module ActiveDirectory
     $excludedUsers += foreach ($group in $excludedGroups) {
@@ -61,7 +61,7 @@ if (Get-WmiObject -Query "select * from Win32_OperatingSystem where ProductType=
     $users = Get-ADUser -Filter * | Where-Object {
         ($_.SamAccountName -notin $excludedUsers)
     }
-    # Set-Content -Path $outputFilePath -Value "Username,Password"
+    Set-Content -Path $outputFilePath -Value "Username,Password"
     Write-Output "Username,Password"
     $GroupUserMap = @{}
 
@@ -72,7 +72,7 @@ if (Get-WmiObject -Query "select * from Win32_OperatingSystem where ProductType=
             Set-ADAccountPassword -Identity $user.SamAccountName -NewPassword $securePassword -Reset
             Write-Host "$($user.SamAccountName),$newPassword" -ForegroundColor Green
             $outputLine = "$($user.SamAccountName),$newPassword"
-            # Add-Content -Path $outputFilePath -Value $outputLine
+            Add-Content -Path $outputFilePath -Value $outputLine
             Write-Output $outputLine
             
             $usersgroups = Get-ADPrincipalGroupMembership -Identity $user | Select-Object -ExpandProperty Name
@@ -102,19 +102,19 @@ if (Get-WmiObject -Query "select * from Win32_OperatingSystem where ProductType=
     foreach ($groupName in $GroupUserMap.Keys) {
         
         if ($GroupUserMap[$groupName].Count -gt 0){
-            # Add-Content -Path $outputFilePath -Value ""
+            Add-Content -Path $outputFilePath -Value ""
             Write-Host "`nGroup: $groupName" -ForegroundColor Yellow
             Write-Output "`nGroup: $groupName"
             Write-Output "$($userEntry.User),$($userEntry.Password)"
-            # Add-Content -Path $outputFilePath -Value "`n`nGroup: $groupName"
+            Add-Content -Path $outputFilePath -Value "`n`nGroup: $groupName"
             
             foreach ($userEntry in $GroupUserMap[$groupName]) {
                 Write-Host "$($userEntry.User),$($userEntry.Password)"
                 Write-Output "$($userEntry.User),$($userEntry.Password)"
-                # Add-Content -Path $outputFilePath -Value "$($userEntry.User),$($userEntry.Password)"
+                Add-Content -Path $outputFilePath -Value "$($userEntry.User),$($userEntry.Password)"
             }
         }
     }
 
-    # Write-Host "Password rotation complete. Output saved to $outputFilePath" -ForegroundColor Cyan
+    Write-Host "Password rotation complete. Output saved to $outputFilePath" -ForegroundColor Cyan
 }
