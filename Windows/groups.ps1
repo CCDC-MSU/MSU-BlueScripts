@@ -22,8 +22,45 @@ if (-not (Test-Path $CsvPath)) {
     exit 1
 }
 
-# Read CSV file
-$csvUsers = Import-Csv -Path $CsvPath
+# Read CSV file and normalize usernames
+$csvContent = Get-Content -Path $CsvPath
+$csvUsers = @()
+
+# Check if first line looks like a header
+$firstLine = $csvContent[0]
+if ($firstLine -match '^Username,Permission$|^username,permission$') {
+    # Has header, use Import-Csv
+    $csvUsers = Import-Csv -Path $CsvPath | ForEach-Object {
+        $_.Username = $_.Username.Trim()
+        $_
+    }
+} else {
+    # No header, manually parse
+    foreach ($line in $csvContent) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        
+        $parts = $line -split ','
+        if ($parts.Count -ge 2) {
+            $csvUsers += [PSCustomObject]@{
+                Username = $parts[0].Trim()
+                Permission = $parts[1].Trim()
+            }
+        }
+    }
+}
+
+Write-Host "Starting Active Directory Audit..." -ForegroundColor Cyan
+Write-Host "Reading from: $CsvPath" -ForegroundColor Cyan
+Write-Host "Loaded $($csvUsers.Count) users from CSV file" -ForegroundColor Cyan
+if ($AutoRemediate) {
+    Write-Host "Auto-Remediation: ENABLED" -ForegroundColor Yellow
+    if ($WhatIf) {
+        Write-Host "WhatIf Mode: ENABLED (no changes will be made)" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "Auto-Remediation: DISABLED (report only)" -ForegroundColor Yellow
+}
+Write-Host ""
 
 # Define group mappings
 $permissionGroups = @{
@@ -36,23 +73,23 @@ $permissionGroups = @{
 $issues = @()
 $remediations = @()
 $csvUsernames = @()
-$processedADUsers = @()
-
-Write-Host "Starting Active Directory Audit..." -ForegroundColor Cyan
-Write-Host "Reading from: $CsvPath" -ForegroundColor Cyan
-if ($AutoRemediate) {
-    Write-Host "Auto-Remediation: ENABLED" -ForegroundColor Yellow
-    if ($WhatIf) {
-        Write-Host "WhatIf Mode: ENABLED (no changes will be made)" -ForegroundColor Yellow
-    }
-} else {
-    Write-Host "Auto-Remediation: DISABLED (report only)" -ForegroundColor Yellow
-}
-Write-Host ""
 
 # Process each user in the CSV
 foreach ($csvUser in $csvUsers) {
-    $username = $csvUser.Username
+    # Skip if Username is null or empty
+    if ([string]::IsNullOrWhiteSpace($csvUser.Username)) {
+        Write-Host "Skipping empty row in CSV" -ForegroundColor DarkGray
+        continue
+    }
+    
+    $username = $csvUser.Username.Trim()
+    
+    # Skip if Permission is null or empty
+    if ([string]::IsNullOrWhiteSpace($csvUser.Permission)) {
+        Write-Host "Skipping user $username (no permission specified)" -ForegroundColor Yellow
+        continue
+    }
+    
     $permission = [int]$csvUser.Permission
     
     # Skip if permission is 0 (ignore)
@@ -61,13 +98,12 @@ foreach ($csvUser in $csvUsers) {
         continue
     }
     
-    $csvUsernames += $username
+    $csvUsernames += $username.ToLower()
     $targetGroup = $permissionGroups[$permission]
     
     # Try to get the AD user
     try {
         $adUser = Get-ADUser -Identity $username -Properties MemberOf -ErrorAction Stop
-        $processedADUsers += $username
         
         # Get all group memberships (CN names only)
         $userGroups = $adUser.MemberOf | ForEach-Object {
@@ -112,7 +148,6 @@ foreach ($csvUser in $csvUsers) {
         elseif ($permission -eq 1) {
             # Should be Domain User only (NOT Domain Admin)
             $isInDomainAdmins = $userGroups -contains "Domain Admins"
-            $isInDomainUsers = $userGroups -contains "Domain Users"
             
             if ($isInDomainAdmins) {
                 Write-Host "[OVER-PRIVILEGED] $username should be Domain User but is in Domain Admins" -ForegroundColor Red
@@ -140,36 +175,8 @@ foreach ($csvUser in $csvUsers) {
                         Write-Host "  [FAILED] Could not remove $username from Domain Admins: $($_.Exception.Message)" -ForegroundColor Red
                     }
                 }
-            }
-            elseif ($isInDomainUsers) {
+            } else {
                 Write-Host "[OK] $username is Domain User (not over-privileged)" -ForegroundColor Green
-            }
-            else {
-                Write-Host "[ISSUE] $username should be Domain User but isn't in the group" -ForegroundColor Red
-                $issues += [PSCustomObject]@{
-                    Type = "Missing Group Membership"
-                    Username = $username
-                    ExpectedGroup = "Domain Users"
-                    ActualGroups = ($userGroups -join ", ")
-                    Details = "User not in Domain Users group"
-                    Remediated = $false
-                }
-                
-                # Add to Domain Users if AutoRemediate is enabled
-                if ($AutoRemediate) {
-                    try {
-                        if ($WhatIf) {
-                            Write-Host "  [WHATIF] Would add $username to Domain Users" -ForegroundColor Cyan
-                        } else {
-                            Add-ADGroupMember -Identity "Domain Users" -Members $username -ErrorAction Stop
-                            Write-Host "  [REMEDIATED] Added $username to Domain Users" -ForegroundColor Green
-                            $remediations += "Added $username to Domain Users"
-                            $issues[-1].Remediated = $true
-                        }
-                    } catch {
-                        Write-Host "  [FAILED] Could not add $username to Domain Users: $($_.Exception.Message)" -ForegroundColor Red
-                    }
-                }
             }
         }
     }
@@ -192,9 +199,10 @@ foreach ($csvUser in $csvUsers) {
 Write-Host ""
 Write-Host "Checking for users in AD not listed in CSV..." -ForegroundColor Cyan
 
-# Get all AD users and find those not in CSV
+# Get all AD users and find those not in CSV (normalize for comparison)
 $allADUsers = Get-ADUser -Filter * | Select-Object -ExpandProperty SamAccountName
-$usersNotInCsv = $allADUsers | Where-Object { $_ -notin $csvUsernames }
+$allADUsersLower = $allADUsers | ForEach-Object { $_.ToLower() }
+$usersNotInCsv = $allADUsersLower | Where-Object { $_ -notin $csvUsernames }
 
 foreach ($adUsername in $usersNotInCsv) {
     Write-Host "[NOT IN CSV] $adUsername exists in AD but not in CSV file" -ForegroundColor Magenta
@@ -213,6 +221,7 @@ Write-Host ""
 Write-Host "==================== AUDIT SUMMARY ====================" -ForegroundColor Cyan
 Write-Host "Total users in CSV (excluding ignored): $($csvUsernames.Count)" -ForegroundColor White
 Write-Host "Total users in AD: $($allADUsers.Count)" -ForegroundColor White
+Write-Host "Users in AD but not CSV (ignored): $($usersNotInCsv.Count)" -ForegroundColor White
 Write-Host "Total issues found: $($issues.Count)" -ForegroundColor $(if ($issues.Count -gt 0) { "Red" } else { "Green" })
 
 if ($AutoRemediate -and -not $WhatIf) {
@@ -220,11 +229,13 @@ if ($AutoRemediate -and -not $WhatIf) {
 }
 
 # Break down issues by type
-$issuesByType = $issues | Group-Object -Property Type
-Write-Host ""
-Write-Host "Issues by Type:" -ForegroundColor Yellow
-foreach ($group in $issuesByType) {
-    Write-Host "  - $($group.Name): $($group.Count)" -ForegroundColor Yellow
+if ($issues.Count -gt 0) {
+    $issuesByType = $issues | Group-Object -Property Type
+    Write-Host ""
+    Write-Host "Issues by Type:" -ForegroundColor Yellow
+    foreach ($group in $issuesByType) {
+        Write-Host "  - $($group.Name): $($group.Count)" -ForegroundColor Yellow
+    }
 }
 
 Write-Host "=======================================================" -ForegroundColor Cyan
