@@ -1,7 +1,7 @@
 # CONFIGURATION
 $gpoDisplayName = "clemson-gpo"                              # Name of the GPO in the backup
 $targetName = "clemson-gpo"                                  # Desired name of the GPO in your domain
-$backupPath = "..\ClemsonGPO"                            # Folder that contains manifest.xml and backup
+$backupPath = ".\ClemsonGPO"                            # Folder that contains manifest.xml and backup
 $domainDn = (Get-ADDomain).DistinguishedName              # Automatically detects domain DN
 
 # Import modules
