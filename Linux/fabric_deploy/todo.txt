@@ -28,17 +28,14 @@ crontab -l + check cron service / timers
 Disk health: smartctl -H / nvme smart-log (if tools installed)
 
 ====== important =====
-make sure diff-changes.sh can diff against arbitirary snapshots (not just latest) (the hacky workaround would be to manually point the latest symlink to the folder you want)
 make sure to add the new honeypot shell to /etc/shells
+test loopback traffic on lockdown
 
 ==== simplification ===
-replace setup agent module with an extention to the users module    (might want to add a ssh key to the root and hardening user)
 
 
 ==== improve ====
 
-password generation:
-    make sure `"`, `:`, `/` is not one of the passwd chars
 
 ==== new feat ====
 add checks for malicious strings like: `rm -rf / --no-preserve-root`, `iptables -F`, (path to shutdown binary)

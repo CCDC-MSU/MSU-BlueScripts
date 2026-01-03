@@ -2,6 +2,7 @@
 Firewall hardening module for CCDC framework
 Ported from lockdown.sh with Dead Man's Switch
 """
+# To-Do: if running firewalld we should also try to install conntrack-tools (or equivalent) first
 
 import logging
 import time
@@ -15,9 +16,9 @@ logger = logging.getLogger(__name__)
 
 # Hardcoded from lockdown.sh
 TRUSTED_IPS = [
-    "203.0.113.10",
-    "198.51.100.99",
-    "10.0.0.2"
+    "10.0.0.2",
+    "100.18.6.211",
+    "172.239.63.207"
 ]
 
 class FirewallHardeningModule(HardeningModule):
@@ -113,7 +114,7 @@ class FirewallHardeningModule(HardeningModule):
         )
 
     def _ensure_firewall_installed(self, conn, server_info):
-        """Install and enable firewall service if missing (CentOS/OpenSUSE fix)"""
+        """Install and enable firewall service if missing"""
         # Check if already running/detected
         initial_backend = self._detect_backend(conn)
         if initial_backend != "unknown":
@@ -145,6 +146,7 @@ class FirewallHardeningModule(HardeningModule):
         if cmd:
             logger.info(f"Installing firewall tools: {cmd}")
             conn.sudo(cmd, hide=True)
+            # to-do: test if this is enough to start firewall in all cases (i suspect not) use the detected server_info.init_system
             if service:
                 # Some containers/distros might not have systemd, check first
                 if conn.run("command -v systemctl", warn=True, hide=True).ok:
@@ -156,6 +158,39 @@ class FirewallHardeningModule(HardeningModule):
                 elif conn.run("command -v rc-service", warn=True, hide=True).ok:
                      conn.sudo(f"rc-service {service} start", warn=True, hide=True)
                      conn.sudo(f"rc-update add {service}", warn=True, hide=True)
+
+    def _ensure_conntrack_installed(self, conn):
+        """
+        Attempt to install conntrack-tools to allow flushing state tables.
+        Returns True if conntrack command is available, False otherwise.
+        """
+        if conn.run("command -v conntrack", warn=True, hide=True).ok:
+            return True
+
+        logger.info("Conntrack not found. Attempting to install...")
+        pms = self.server_info.package_managers
+        cmd = None
+
+        if "dnf" in pms:
+            cmd = "dnf install -y conntrack-tools"
+        elif "yum" in pms:
+            cmd = "yum install -y conntrack-tools"
+        elif "apt" in pms:
+            cmd = "DEBIAN_FRONTEND=noninteractive apt-get install -y conntrack"
+        elif "zypper" in pms:
+            cmd = "zypper --non-interactive install conntrack-tools"
+        elif "apk" in pms:
+            cmd = "apk add conntrack-tools"
+
+        if cmd:
+            try:
+                conn.sudo(cmd, hide=True)
+                if conn.run("command -v conntrack", warn=True, hide=True).ok:
+                    return True
+            except Exception as e:
+                logger.warning(f"Failed to install conntrack: {e}")
+        
+        return False
 
     def _prepare_firewall(self, conn):
         """Set firewall to OPEN/TRUSTED state before locking down (Plumbing fix)"""
@@ -241,11 +276,14 @@ class FirewallHardeningModule(HardeningModule):
     # --- Backend Specific Implementations ---
 
     def _apply_firewalld(self, conn):
+        # 1. Ensure Conntrack is present (for flushing state later)
+        has_conntrack = self._ensure_conntrack_installed(conn)
+        
         try:
-            # 1. Reload to clear old runtime junk
+            # 2. Reload to clear old runtime junk
             conn.sudo("firewall-cmd --reload", hide=True, timeout=30)
             
-            # 2. Configure Trusted Zone
+            # 3. Configure Trusted Zone
             # Add loopback interface to trusted zone (try/except in case of issues)
             conn.sudo("firewall-cmd --zone=trusted --add-interface=lo", warn=True, hide=True, timeout=30)
             
@@ -253,17 +291,35 @@ class FirewallHardeningModule(HardeningModule):
             for ip in TRUSTED_IPS:
                 conn.sudo(f"firewall-cmd --zone=trusted --add-source={ip}", hide=True, timeout=30)
             
-            # 3. Set Default Zone to Drop
-            # This is the dangerous step that might cut connection
+            # 4. Set Default Zone to Drop
             conn.sudo("firewall-cmd --set-default-zone=drop", hide=True, timeout=10)
             
+            # 5. FLUSH EXISTING CONNECTIONS (Critical Fix)
+            # firewalld preserves state by default. We must flush it to kill 'evil' connections.
+            # This might sever our own connection, so we expect timeouts.
+            logger.info("Applying Strict Rules: Flushing existing connection states...")
+            
+            try:
+                if has_conntrack:
+                    # Preferred method: Flush conntrack table
+                    logger.info("Executing: conntrack -F")
+                    conn.sudo("conntrack -F", hide=True, timeout=5)
+                else:
+                    # Fallback method: Complete reload (Disruptive but effective)
+                    logger.info("Conntrack missing. Fallback to: firewall-cmd --complete-reload")
+                    conn.sudo("firewall-cmd --complete-reload", hide=True, timeout=10)
+            
+            except (CommandTimedOut, UnexpectedExit):
+                # This is actually a GOOD sign - it means the flush likely worked and killed the ssh state.
+                logger.info("Connection severed during state flush (Expected behavior).")
+
         except CommandTimedOut:
             logger.warning("Firewall command timed out (likely connection severed by rules). Assuming success.")
             return HardeningResult(success=True, command="apply_firewalld", description="Applied firewalld rules", output="Command timed out (Session severed)")
         except Exception as e:
             return HardeningResult(success=False, command="apply_firewalld", description="Applied firewalld rules", error=str(e))
 
-        return HardeningResult(success=True, command="apply_firewalld", description="Applied firewalld rules", output="Zone rules applied")
+        return HardeningResult(success=True, command="apply_firewalld", description="Applied firewalld rules", output="Zone rules applied & States Flushed")
 
     def _apply_iptables(self, conn):
         cmds = [
@@ -294,27 +350,39 @@ class FirewallHardeningModule(HardeningModule):
         return HardeningResult(success=True, command="apply_iptables", description="Applied iptables rules", output="Rules applied")
 
     def _apply_nft(self, conn):
-        script = [
-            "nft flush ruleset",
-            "nft add table inet filter",
-            "nft add chain inet filter input { type filter hook input priority 0 ; policy drop ; }",
-            "nft add chain inet filter forward { type filter hook forward priority 0 ; policy drop ; }",
-            "nft add chain inet filter output { type filter hook output priority 0 ; policy drop ; }",
-            "nft add rule inet filter input iif lo accept",
-            "nft add rule inet filter output oif lo accept"
+        # Build nftables config file content
+        nft_conf = "/tmp/nftables.conf.go_dark"
+        
+        config_lines = [
+            "flush ruleset",
+            "add table inet filter",
+            "add chain inet filter input { type filter hook input priority 0 ; policy drop ; }",
+            "add chain inet filter forward { type filter hook forward priority 0 ; policy drop ; }",
+            "add chain inet filter output { type filter hook output priority 0 ; policy drop ; }",
+            "add rule inet filter input iif lo accept",
+            "add rule inet filter output oif lo accept"
         ]
+        
         for ip in TRUSTED_IPS:
-            script.append(f"nft add rule inet filter input ip saddr {ip} accept")
-            script.append(f"nft add rule inet filter output ip daddr {ip} accept")
+            config_lines.append(f"add rule inet filter input ip saddr {ip} accept")
+            config_lines.append(f"add rule inet filter output ip daddr {ip} accept")
             
-        full_cmd = " && ".join([f"sh -c '{c}'" for c in script])
+        full_config = "\n".join(config_lines)
+        
         try:
-            conn.sudo(full_cmd, hide=True, timeout=10)
+            # Write config to file
+            conn.sudo(f"printf '{full_config}' > {nft_conf}", hide=True)
+            
+            # Apply config
+            conn.sudo(f"nft -f {nft_conf}", hide=True, timeout=10)
+            
         except CommandTimedOut:
             logger.warning("NFTables command timed out (likely connection severed).")
             return HardeningResult(success=True, command="apply_nft", description="Applied nftables rules", output="Command timed out (Session severed)")
+        except Exception as e:
+            return HardeningResult(success=False, command="apply_nft", description="Applied nftables rules", error=str(e))
             
-        return HardeningResult(success=True, command="apply_nft", description="Applied nftables rules", output="Rules applied")
+        return HardeningResult(success=True, command="apply_nft", description="Applied nftables rules", output="Rules applied via config file")
 
     def _apply_pf(self, conn):
         pf_conf = "/tmp/pf.conf.go_dark"
@@ -368,7 +436,6 @@ pass out from any to <trusted_ssh> no state
         except Exception as e:
             return HardeningResult(success=False, command="apply_ipfw", description="Applied IPFW rules", error=str(e))
 
-        
         return HardeningResult(success=True, command="apply_ipfw", description="Applied IPFW rules", output="IPFW rules applied")
 
     def _test_connectivity(self, conn, server_info):
