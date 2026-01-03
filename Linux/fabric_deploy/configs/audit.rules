@@ -1,0 +1,48 @@
+# CCDC Audit Rules for Security Monitoring
+
+# Delete all existing rules
+-D
+
+# Set buffer size
+-b 8192
+
+# Set failure mode to continue logging
+-f 1
+
+# Monitor file access
+-w /etc/passwd -p wa -k passwd_changes
+-w /etc/shadow -p wa -k shadow_changes
+-w /etc/group -p wa -k group_changes
+-w /etc/sudoers -p wa -k sudoers_changes
+-w /etc/ssh/sshd_config -p wa -k ssh_config_changes
+
+# Monitor system configuration changes
+-w /etc/hosts -p wa -k network_config
+-w /etc/hostname -p wa -k hostname_changes
+-w /etc/fstab -p wa -k fstab_changes
+-w /etc/crontab -p wa -k crontab_changes
+
+# Monitor login/logout events
+-w /var/log/lastlog -p wa -k logins
+-w /var/log/wtmp -p wa -k logins
+-w /var/log/btmp -p wa -k failed_logins
+
+# Monitor privilege escalation
+-w /bin/su -p x -k privilege_escalation
+-w /usr/bin/sudo -p x -k privilege_escalation
+-w /etc/sudoers.d/ -p wa -k privilege_escalation
+
+# Monitor network configuration
+-a always,exit -F arch=b64 -S socket -F a0=2 -k network_socket_created
+-a always,exit -F arch=b32 -S socket -F a0=2 -k network_socket_created
+
+# Monitor file deletion
+-a always,exit -F arch=b64 -S unlink -S unlinkat -S rename -S renameat -k file_deletion
+-a always,exit -F arch=b32 -S unlink -S unlinkat -S rename -S renameat -k file_deletion
+
+# Monitor process execution
+-a always,exit -F arch=b64 -S execve -k process_execution
+-a always,exit -F arch=b32 -S execve -k process_execution
+
+# Make rules immutable (restart required to change)
+-e 2
