@@ -300,6 +300,132 @@ compare_config_file() {
     return 0
 }
 
+# Function to compare configuration directories
+compare_config_dir() {
+    dirpath="$1"
+    backup_dir="${BACKUP_FILES}${dirpath}"
+
+    if [ ! -d "$backup_dir" ] && [ ! -d "$dirpath" ]; then
+        return 0
+    fi
+
+    if [ ! -d "$backup_dir" ]; then
+        log_change "$dirpath: NEW DIRECTORY"
+        return 1
+    fi
+
+    if [ ! -d "$dirpath" ]; then
+        log_change "$dirpath: DIRECTORY REMOVED"
+        return 1
+    fi
+
+    if ! diff -qr "$backup_dir" "$dirpath" >/dev/null 2>&1; then
+        log_change "$dirpath"
+        printf "${YELLOW}"
+        diff -ru "$backup_dir" "$dirpath" | head -n 100
+        printf "${NC}"
+        printf "\n"
+        return 1
+    fi
+
+    return 0
+}
+
+is_priority_path() {
+    path="$1"
+
+    case "$path" in
+        /etc/passwd|/etc/group|/etc/sudoers|/etc/ssh/sshd_config|/etc/login.defs|/etc/securetty|/etc/hosts|/etc/resolv.conf)
+            return 0
+            ;;
+        /etc/sudoers.d|/etc/sudoers.d/*)
+            return 0
+            ;;
+    esac
+
+    if [ "$path" = "/etc/shadow" ] && [ "$OS_TYPE" = "Linux" ]; then
+        return 0
+    fi
+
+    if [ "$path" = "/etc/master.passwd" ] || [ "$path" = "/etc/login.conf" ]; then
+        if [ "$OS_TYPE" = "FreeBSD" ] || [ "$OS_TYPE" = "OpenBSD" ] || [ "$OS_TYPE" = "NetBSD" ]; then
+            return 0
+        fi
+    fi
+
+    if [ "$path" = "/etc/rc.conf" ] || [ "$path" = "/etc/rc.conf.local" ]; then
+        if [ "$OS_TYPE" = "FreeBSD" ] || [ "$OS_TYPE" = "OpenBSD" ] || [ "$OS_TYPE" = "NetBSD" ]; then
+            return 0
+        fi
+    fi
+
+    if [ "$path" = "/etc/netstart" ] && [ "$OS_TYPE" = "OpenBSD" ]; then
+        return 0
+    fi
+
+    return 1
+}
+
+list_etc_files() {
+    base="${1%/}"
+    output="$2"
+
+    find "$base" \( -type f -o -type l \) -print 2>/dev/null | while IFS= read -r path; do
+        printf '%s\n' "${path#$base}"
+    done | sort > "$output"
+}
+
+report_non_priority_etc_changes() {
+    backup_etc="${BACKUP_FILES}/etc"
+
+    if [ ! -d "$backup_etc" ]; then
+        log_warn "Full /etc backup not found in snapshot; skipping non-priority /etc changes."
+        return
+    fi
+
+    backup_list="${TEMP_STATE}/etc_backup_files.txt"
+    current_list="${TEMP_STATE}/etc_current_files.txt"
+    only_current="${TEMP_STATE}/etc_only_current.txt"
+    only_backup="${TEMP_STATE}/etc_only_backup.txt"
+    common_list="${TEMP_STATE}/etc_common_files.txt"
+
+    list_etc_files "$backup_etc" "$backup_list"
+    list_etc_files "/etc" "$current_list"
+
+    comm -13 "$backup_list" "$current_list" > "$only_current"
+    comm -23 "$backup_list" "$current_list" > "$only_backup"
+    comm -12 "$backup_list" "$current_list" > "$common_list"
+
+    while IFS= read -r rel; do
+        [ -z "$rel" ] && continue
+        path="/etc$rel"
+        if is_priority_path "$path"; then
+            continue
+        fi
+        log_warn "$path: NEW FILE (non-priority)"
+    done < "$only_current"
+
+    while IFS= read -r rel; do
+        [ -z "$rel" ] && continue
+        path="/etc$rel"
+        if is_priority_path "$path"; then
+            continue
+        fi
+        log_warn "$path: FILE REMOVED (non-priority)"
+    done < "$only_backup"
+
+    while IFS= read -r rel; do
+        [ -z "$rel" ] && continue
+        path="/etc$rel"
+        if is_priority_path "$path"; then
+            continue
+        fi
+        if ! diff -q "${backup_etc}${rel}" "/etc${rel}" >/dev/null 2>&1; then
+            log_warn "$path: MODIFIED (non-priority)"
+        fi
+    done < "$common_list"
+}
+
 # Cleanup function
 cleanup() {
     log_info "Cleaning up temporary files..."
@@ -328,6 +454,7 @@ log_info "Checking user and authentication files..."
 compare_config_file /etc/passwd
 compare_config_file /etc/group
 compare_config_file /etc/sudoers
+compare_config_dir /etc/sudoers.d
 
 if [ "$OS_TYPE" = "Linux" ]; then
     compare_config_file /etc/shadow
@@ -356,18 +483,8 @@ elif [ "$OS_TYPE" = "OpenBSD" ]; then
     compare_config_file /etc/netstart
 fi
 
-# Check for new/removed files in sudoers.d
-if [ -d /etc/sudoers.d ]; then
-    if [ -d "${BACKUP_FILES}/etc/sudoers.d" ]; then
-        for file in /etc/sudoers.d/*; do
-            [ -e "$file" ] || continue
-            filename=$(basename "$file")
-            if [ ! -f "${BACKUP_FILES}/etc/sudoers.d/$filename" ]; then
-                log_change "/etc/sudoers.d/$filename: NEW FILE"
-            fi
-        done
-    fi
-fi
+log_section "OTHER /etc FILE CHANGES"
+report_non_priority_etc_changes
 
 # ============================================================================
 # COMPARE SYSTEM STATE
