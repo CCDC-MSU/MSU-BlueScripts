@@ -110,7 +110,7 @@ HostbasedAuthentication no
 X11Forwarding no
 
 # Authentication & Session Settings
-MaxAuthTries 1
+MaxAuthTries 3
 LoginGraceTime 60s
 ClientAliveInterval 300
 ClientAliveCountMax 2

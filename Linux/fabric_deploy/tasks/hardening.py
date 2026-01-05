@@ -120,92 +120,144 @@ def harden(c, hosts_file='hosts.txt', dry_run=False, modules=None,
     def _harden_host(server_creds):
         host_id = _host_label(server_creds)
         with _host_log_handler("harden", host_id, timestamp) as log_path:
-            try:
-                logger.info(f"Starting hardening on {server_creds.host}")
-                # Set up connection
-                connect_kwargs = {
-                    'allow_agent': False,
-                    'look_for_keys': False,
-                    'timeout': 90,
-                    'keepalive': 10
-                }
-                config_overrides = {
-                    'sudo': {'password': None},
-                    'load_ssh_configs': False
-                }
+            
+            # Helper to run hardening logic given a valid connection
+            def perform_hardening(conn, is_fallback=False):
+                # First discover the system
+                # If fallback, we might want to update creds or just assume root access implies sudo capability
+                discovery = SystemDiscovery(conn, server_creds)
+                server_info = discovery.discover_system()
+                server_info._discovery = discovery
 
-                if server_creds.key_file:
-                    connect_kwargs['key_filename'] = server_creds.key_file
-                    logger.info(f"Using SSH key: {server_creds.key_file}")
-                elif server_creds.password:
-                    connect_kwargs['password'] = server_creds.password
-                    config_overrides['sudo']['password'] = server_creds.password
-                    logger.info("Using password authentication")
-
-                # Add port if specified
-                if server_creds.port != 22:
-                    connect_kwargs['port'] = server_creds.port
-
-                fabric_config = Config(overrides=config_overrides)
-
-                # Run discovery and hardening
-                with Connection(server_creds.host, user=server_creds.user,
-                               config=fabric_config, connect_kwargs=connect_kwargs) as conn:
-
-                    # First discover the system
-                    discovery = SystemDiscovery(conn, server_creds)
-                    server_info = discovery.discover_system()
-                    server_info._discovery = discovery
-
-                    if not server_info.discovery_successful:
-                        logger.error(f"Discovery failed for {server_creds.host}, skipping hardening")
-                        return {
-                            'host': server_creds.host,
-                            'status': 'discovery-failed',
-                            'log_file': str(log_path)
-                        }
-
-                    # Then deploy hardening
-                    orchestrator = HardeningOrchestrator(conn, server_info, script_paths=script_paths)
-                    result = orchestrator.deploy(dry_run=dry_run, modules=module_list)
-                    
-                    # Tools upload
-                    _upload_tools_internal(conn)
-
-                    logger.info(f"Hardening completed for {server_creds.host}")
-                    report_file = result.get('report_file', 'N/A')
-                    logger.info(f"Report generated: {report_file}")
-                    logger.info(f"Summary:\n{result['summary']}")
-
-                    results = result.get('results', {})
-                    failed_actions = any(
-                        not action.success for module_results in results.values() for action in module_results
-                    )
-                    status = "dry-run" if dry_run else "ok"
-                    if failed_actions:
-                        status = "failed"
-                        logger.error(f"Hardening had failures for {server_creds.host}")
-
+                if not server_info.discovery_successful:
+                    logger.error(f"Discovery failed for {server_creds.host}, skipping hardening")
                     return {
                         'host': server_creds.host,
-                        'status': status,
-                        'log_file': str(log_path),
-                        'report_file': report_file
+                        'status': 'discovery-failed',
+                        'log_file': str(log_path)
                     }
 
-            except Exception as e:
-                # Handle connection reset specially if needed via helper
-                if is_connection_reset(e):
-                    logger.error(f"Hardening failed for {server_creds.host}: Connection reset by peer")
-                else:
-                    logger.error(f"Hardening failed for {server_creds.host}: {e}")
-                    import traceback
-                    logger.error(traceback.format_exc())
+                # Then deploy hardening
+                orchestrator = HardeningOrchestrator(conn, server_info, script_paths=script_paths)
+                result = orchestrator.deploy(dry_run=dry_run, modules=module_list)
+                
+                # Tools upload
+                _upload_tools_internal(conn)
+
+                logger.info(f"Hardening completed for {server_creds.host}")
+                report_file = result.get('report_file', 'N/A')
+                logger.info(f"Report generated: {report_file}")
+                logger.info(f"Summary:\n{result['summary']}")
+
+                results = result.get('results', {})
+                failed_actions = any(
+                    not action.success for module_results in results.values() for action in module_results
+                )
+                
+                status_extra = " (fallback)" if is_fallback else ""
+                status = f"dry-run{status_extra}" if dry_run else f"ok{status_extra}"
+                
+                if failed_actions:
+                    status = f"failed{status_extra}"
+                    logger.error(f"Hardening had failures for {server_creds.host}")
+
                 return {
                     'host': server_creds.host,
-                    'status': f'error: {e}',
-                    'log_file': str(log_path)
+                    'status': status,
+                    'log_file': str(log_path),
+                    'report_file': report_file
                 }
+
+            # Setup connection parameters
+            logger.info(f"Starting hardening on {server_creds.host}")
+            connect_kwargs = {
+                'allow_agent': False,
+                'look_for_keys': False,
+                'timeout': 90
+            }
+            config_overrides = {
+                'sudo': {'password': None},
+                'load_ssh_configs': False
+            }
+
+            if server_creds.key_file:
+                connect_kwargs['key_filename'] = server_creds.key_file
+                logger.info(f"Using SSH key: {server_creds.key_file}")
+            elif server_creds.password:
+                connect_kwargs['password'] = server_creds.password
+                config_overrides['sudo']['password'] = server_creds.password
+                logger.info("Using password authentication")
+
+            if server_creds.port != 22:
+                connect_kwargs['port'] = server_creds.port
+
+            fabric_config = Config(overrides=config_overrides)
+
+            # Attempt 1: Primary Connection
+            try:
+                with Connection(server_creds.host, user=server_creds.user,
+                               config=fabric_config, connect_kwargs=connect_kwargs) as conn:
+                    
+                    # Connection Warmer (explicit check here to catch failures fast)
+                    logger.info("Attempting primary connection...")
+                    conn.run("true", hide=True, timeout=10)
+                    
+                    # Set keepalive after connection is established
+                    if conn.transport:
+                        conn.transport.set_keepalive(10)
+                        
+                    return perform_hardening(conn)
+
+            except Exception as e:
+                logger.warning(f"Primary connection to {server_creds.host} failed: {e}")
+                
+                # Attempt 2: Fallback to Root Key
+                try:
+                    logger.info(f"Attempting fallback to COMPROMISED KEY for {server_creds.host}...")
+                    
+                    # Resolve key path relative to this file
+                    # tasks/hardening.py -> ../keys/test-root-key.private
+                    fallback_key = os.path.abspath(os.path.join(os.path.dirname(__file__), "../keys/test-root-key.private"))
+                    
+                    if not os.path.exists(fallback_key):
+                        logger.error(f"Fallback key not found at {fallback_key}")
+                        raise e # Re-raise original error if we can't try fallback
+
+                    fallback_kwargs = connect_kwargs.copy()
+                    fallback_kwargs['key_filename'] = [fallback_key]
+                    fallback_kwargs.pop('password', None)
+                    
+                    # For root fallback, we effectively don't need sudo password
+                    fallback_config = Config(overrides={'load_ssh_configs': False})
+
+                    with Connection(server_creds.host, user='root',
+                                   config=fallback_config, connect_kwargs=fallback_kwargs) as conn:
+                        
+                        conn.run("true", hide=True, timeout=10)
+                        
+                        # Set keepalive after connection is established
+                        if conn.transport:
+                            conn.transport.set_keepalive(10)
+                            
+                        logger.info(f"FALLBACK SUCCESS: Connected as root using recovery key!")
+                        return perform_hardening(conn, is_fallback=True)
+
+                except Exception as fallback_e:
+                    logger.error(f"Fallback connection failed: {fallback_e}")
+                    # Log original failure as the primary cause? or fallback? 
+                    # Let's log that hardening failed completely.
+                    
+                    # Handle connection reset specially if needed via helper
+                    if is_connection_reset(e):
+                         logger.error(f"Hardening failed for {server_creds.host}: Connection reset by peer")
+                    else:
+                         logger.error(f"Hardening failed for {server_creds.host}: {e}")
+                    
+                    return {
+                        'host': server_creds.host,
+                        'status': f'error: {e} (fallback also failed: {fallback_e})',
+                        'log_file': str(log_path)
+                    }
 
     results = []
     max_workers = min(16, len(servers)) if servers else 1

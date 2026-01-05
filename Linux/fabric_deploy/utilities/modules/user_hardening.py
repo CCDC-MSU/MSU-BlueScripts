@@ -113,19 +113,16 @@ class UserHardeningModule(HardeningModule):
 
             password_cache: Dict[str, str] = {}
             per_host_users: Set[str] = set()
-            changed = False
 
             def populate_passwords(
                 user_map: Dict[str, object],
             ) -> None:
-                nonlocal changed
                 for username, value in user_map.items():
                     if isinstance(value, str):
                         trimmed = value.strip()
                         if trimmed == self.PER_HOST_SENTINEL:
                             if value != self.PER_HOST_SENTINEL:
                                 user_map[username] = self.PER_HOST_SENTINEL
-                                changed = True
                             per_host_users.add(username)
                             continue
                         if trimmed:
@@ -136,27 +133,16 @@ class UserHardeningModule(HardeningModule):
                         password = generate_password()
                         user_map[username] = password
                         password_cache[username] = password
-                        changed = True
                         continue
 
                     password = str(value)
                     user_map[username] = password
                     password_cache[username] = password
-                    changed = True
 
             populate_passwords(regular_map)
             populate_passwords(super_map)
 
             per_host_users -= set(password_cache)
-
-            if changed:
-                try:
-                    with open(config_path, "w") as f:
-                        json.dump(config, f, indent=2)
-                        f.write("\n")
-                    logger.info("Updated users.json with generated passwords")
-                except OSError as exc:
-                    logger.error("Failed to update users.json: %s", exc)
 
             UserHardeningModule._password_cache = password_cache
             UserHardeningModule._per_host_users = per_host_users
