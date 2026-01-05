@@ -594,14 +594,21 @@ class SystemDiscovery:
         available = []
         seen = set()
 
-        for cmd in commands_to_check:
-            if cmd in seen:
-                continue
-            seen.add(cmd)
-            result = self._run_command(f"command -v {cmd} >/dev/null 2>&1")
-            if result.success:
-                available.append(cmd)
-
+        # Batch check all commands using a single shell invocation
+        # This significantly reduces network round trips
+        cmd_list_str = " ".join(commands_to_check)
+        
+        # This script iterates through the list and checks each one
+        check_script = (
+            f"for cmd in {cmd_list_str}; do "
+            "command -v $cmd >/dev/null 2>&1 && echo $cmd; "
+            "done"
+        )
+        
+        result = self._run_command(check_script)
+        if result.success and result.output:
+            available = list(set(result.output.splitlines()))
+        
         self.server_info.available_commands = available
     
     def _discover_system_resources(self):

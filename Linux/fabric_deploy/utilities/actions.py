@@ -297,9 +297,24 @@ echo "Could not find sudoers.d directory" >&2
         return f"""set -eu
 g={g}
 
+# Ensure /etc/sudoers.d exists
 if [ ! -d /etc/sudoers.d ]; then
-  echo "/etc/sudoers.d not found" >&2
-  exit 1
+  mkdir -p /etc/sudoers.d
+  chmod 750 /etc/sudoers.d
+fi
+
+# Ensure /etc/sudoers includes /etc/sudoers.d
+if ! grep -q "^#includedir /etc/sudoers.d" /etc/sudoers; then
+  # Verify we can modify sudoers safely
+  cp /etc/sudoers /etc/sudoers.bak
+  echo "#includedir /etc/sudoers.d" >> /etc/sudoers
+  if command -v visudo >/dev/null 2>&1; then
+    if ! visudo -c >/dev/null; then
+      echo "Broken sudoers config detected, restoring backup" >&2
+      mv /etc/sudoers.bak /etc/sudoers
+      exit 1
+    fi
+  fi
 fi
 
 f="/etc/sudoers.d/$g"
