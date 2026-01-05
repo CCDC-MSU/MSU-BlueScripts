@@ -126,7 +126,8 @@ def harden(c, hosts_file='hosts.txt', dry_run=False, modules=None,
                 connect_kwargs = {
                     'allow_agent': False,
                     'look_for_keys': False,
-                    'timeout': 90
+                    'timeout': 90,
+                    'keepalive': 10
                 }
                 config_overrides = {
                     'sudo': {'password': None},

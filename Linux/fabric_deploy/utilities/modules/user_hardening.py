@@ -17,8 +17,8 @@ from ..utils import generate_password, is_connection_reset
 
 logger = logging.getLogger(__name__)
 
-ROOT_KEY_PATH = os.path.join(os.path.dirname(__file__), "/home/antimony/Desktop/cyber/repos/MSU-BlueScripts/Linux/fabric_deploy/keys/test-root-key.pub")
-ROOT_KEY_PATH_PRIVATE = os.path.join(os.path.dirname(__file__), "/home/antimony/Desktop/cyber/repos/MSU-BlueScripts/Linux/fabric_deploy/keys/test-root-key.private")
+ROOT_KEY_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../keys/test-root-key.pub"))
+ROOT_KEY_PATH_PRIVATE = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../keys/test-root-key.private"))
 
 class UserHardeningModule(HardeningModule):
     """User account hardening based on users.json."""

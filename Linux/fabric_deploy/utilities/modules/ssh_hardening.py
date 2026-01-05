@@ -13,7 +13,7 @@ from fabric import Connection, Config
 from .base import HardeningModule, HardeningCommand, PythonAction, HardeningResult
 from ..discovery import OSFamily
 
-ROOT_KEY_PATH = os.path.join(os.path.dirname(__file__), "/home/antimony/Desktop/cyber/repos/MSU-BlueScripts/Linux/fabric_deploy/keys/test-root-key.private")
+ROOT_KEY_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../keys/test-root-key.private"))
 
 logger = logging.getLogger(__name__)
 

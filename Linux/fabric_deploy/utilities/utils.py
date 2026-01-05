@@ -37,6 +37,48 @@ def is_connection_reset(e):
     return False
 
 
+def retry_on_connection_failure(max_retries=3, delay=2, backoff=2):
+    """Decorator to retry functions on connection failure"""
+    def decorator(func):
+        import time
+        from functools import wraps
+        
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            retries = 0
+            current_delay = delay
+            
+            while True:
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    if not is_connection_reset(e):
+                        raise
+                        
+                    retries += 1
+                    if retries > max_retries:
+                        logger.error(f"Function {func.__name__} failed after {max_retries} retries due to connection reset: {e}")
+                        raise
+                        
+                    logger.warning(f"Connection reset in {func.__name__}. Retrying in {current_delay}s... (Attempt {retries}/{max_retries})")
+                    time.sleep(current_delay)
+                    current_delay *= backoff
+                    
+                    # If the first argument is an object with a 'conn' attribute (like self.conn), 
+                    # try to re-open it if closed?
+                    # For now just let the retry happen, fabric constructs usually handle reconnect on next call if properly configured,
+                    # but explicit close might be needed if socket is dead.
+                    # We can try to inspect args[0] (self) if it has a conn attribute
+                    if args and hasattr(args[0], 'conn'):
+                        try:
+                            args[0].conn.close()
+                        except:
+                            pass
+                            
+        return wrapper
+    return decorator
+
+
 def load_config(config_file: str = None) -> dict:
     """Load configuration from config.yaml file"""
     if config_file:
@@ -100,7 +142,7 @@ def parse_hosts_file(hosts_file: str) -> List[ServerCredentials]:
                     elif len(parts) == 3:
                         # host:user:password_or_keyfile
                         host, user, auth = parts
-                        if auth.startswith('/') or auth.startswith('~') or auth.endswith('.pem') or auth.endswith('.key'):
+                        if '/' in auth or auth.startswith('~') or auth.endswith('.pem') or auth.endswith('.key') or auth.endswith('.private'):
                             key_file = auth
                         else:
                             password = auth
@@ -111,7 +153,7 @@ def parse_hosts_file(hosts_file: str) -> List[ServerCredentials]:
                         # - host:user:password:friendly_name (4th starts with alpha)
                         host, user, auth, fourth = parts
                         
-                        if auth.startswith('/') or auth.startswith('~') or auth.endswith('.pem') or auth.endswith('.key'):
+                        if '/' in auth or auth.startswith('~') or auth.endswith('.pem') or auth.endswith('.key') or auth.endswith('.private'):
                             key_file = auth
                         else:
                             password = auth
@@ -127,7 +169,7 @@ def parse_hosts_file(hosts_file: str) -> List[ServerCredentials]:
                         # host:user:password:port:friendly_name
                         host, user, auth, port_str, friendly_name = parts
                         
-                        if auth.startswith('/') or auth.startswith('~') or auth.endswith('.pem') or auth.endswith('.key'):
+                        if '/' in auth or auth.startswith('~') or auth.endswith('.pem') or auth.endswith('.key') or auth.endswith('.private'):
                             key_file = auth
                         else:
                             password = auth

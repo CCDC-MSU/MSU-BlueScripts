@@ -10,6 +10,7 @@ from fabric import Connection
 
 from ..models import ServerInfo
 from ..discovery import OSFamily, CommandResult
+from ..utils import retry_on_connection_failure
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +110,7 @@ class HardeningModule(ABC):
         """Check if this module is applicable to the system"""
         return True
     
+    @retry_on_connection_failure(max_retries=3, delay=2)
     def _run_command(self, command: str, use_sudo: bool = False) -> CommandResult:
         """Run a command with optional sudo"""
         if use_sudo and self.conn.user != 'root':
