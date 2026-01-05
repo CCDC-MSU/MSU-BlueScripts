@@ -4,3 +4,4 @@ script_outputs/
 logs
 .scratch
 keys/*
+.claude

@@ -3,7 +3,8 @@
 # System State Backup Script
 # Creates comprehensive backup before system hardening
 #
-
+# TO-DO: test snapshotting all of /etc/* 
+# TO-DO: consider snaphotting home directories of all users
 
 BACKUP_ROOT="/root/pre-hardening-backups"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)

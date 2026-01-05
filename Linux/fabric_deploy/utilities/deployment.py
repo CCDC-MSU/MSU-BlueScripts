@@ -80,14 +80,16 @@ logger = logging.getLogger(__name__)
 
 
 class HardeningOrchestrator:
-    """Orchestrates the hardening process"""
-    
-    def __init__(self, connection: Connection, server_info: ServerInfo, os_family: str, 
+    """Orchestrates the hardening process and deploys configurations"""
+
+    def __init__(self, connection: Connection, server_info: ServerInfo,
                  script_paths: Optional[List[str]] = None,
                  pipeline: Optional[List[PipelineStep]] = None):
         self.conn = connection
         self.server_info = server_info
-        self.os_family = os_family
+        # Extract OS family from discovery
+        discovery = getattr(server_info, '_discovery', None)
+        self.os_family = getattr(discovery, 'os_family', 'unknown') if discovery else 'unknown'
         self.script_paths = script_paths
         self.modules_map = self._initialize_modules_map()
         self.pipeline = pipeline or DEFAULT_PIPELINE
@@ -324,47 +326,28 @@ class HardeningOrchestrator:
         
         return "\n".join(summary_lines)
 
-
-class HardeningDeployer:
-    """Main deployment class that integrates with existing fabric_deploy framework"""
-    
-    def __init__(self, connection: Connection, server_info: ServerInfo):
-        self.conn = connection
-        self.server_info = server_info
-        # Extract OS family from discovery
-        discovery = getattr(server_info, '_discovery', None)
-        self.os_family = getattr(discovery, 'os_family', 'unknown') if discovery else 'unknown'
-        
-    def deploy_hardening(self, dry_run: bool = False, 
-                        modules: Optional[List[str]] = None,
-                        script_paths: Optional[List[str]] = None) -> Dict:
+    def deploy(self, dry_run: bool = False,
+               modules: Optional[List[str]] = None) -> Dict:
         """
-        Deploy hardening using command-based approach
-        
+        Deploy hardening and generate report.
+
         Args:
             dry_run: If True, only show what would be done
-            modules: List of module names to apply (None = all)
-            script_paths: List of scripts to run
-            
+            modules: List of module names to apply (None = use pipeline)
+
         Returns:
             Dictionary with results and summary
         """
-        # Use friendly name if available via credentials.display_name
         host_label = self.server_info.credentials.display_name.replace(":", "_").replace("/", "_")
         logger.info(f"Starting hardening deployment on {self.server_info.credentials.display_name} ({self.conn.host})")
         if dry_run:
             logger.info("DRY RUN MODE - No changes will be made")
-        
-        # We pass script_paths arguments to be available for 'bash_scripts' module in the pipeline
-        orchestrator = HardeningOrchestrator(self.conn, self.server_info, self.os_family,
-                                           script_paths=script_paths)
-        
-        results = orchestrator.apply_all(dry_run=dry_run, modules=modules)
-        summary = orchestrator.get_summary(results)
-        
-        # Generate Report
+
+        results = self.apply_all(dry_run=dry_run, modules=modules)
+        summary = self.get_summary(results)
+
         report_path = self._generate_report(host_label, results, summary)
-        
+
         return {
             'host': self.conn.host,
             'server_info': self.server_info,
@@ -379,22 +362,19 @@ class HardeningDeployer:
         report_dir = Path("logs/reports")
         report_dir.mkdir(parents=True, exist_ok=True)
         report_path = report_dir / f"REPORT_{host_label}_{timestamp}.md"
-        
+
         try:
             with open(report_path, 'w') as f:
                 f.write(f"# Hardening Report: {host_label}\n")
                 f.write(f"**Date**: {datetime.now().isoformat()}\n")
                 f.write(f"**Host**: {self.server_info.hostname} ({self.os_family})\n\n")
-                
-                # Execution Summary
+
                 f.write("## Execution Summary\n")
                 f.write("```\n")
                 f.write(summary)
                 f.write("\n```\n\n")
-                
-                # User Changes
+
                 f.write("## User Management Changes\n")
-                # Pull password log path if available from results
                 user_res = results.get('user_hardening', [])
                 pwd_log = next((r.output for r in user_res if r.command.startswith('write_password_log')), None)
                 if pwd_log and os.path.exists(pwd_log):
@@ -409,8 +389,7 @@ class HardeningDeployer:
                 else:
                     f.write("*No password changes recorded or log not found.*\n")
                 f.write("\n")
-                
-                # Sudoers Dump
+
                 f.write("## Sudoers Configuration\n")
                 sudoers_dump = getattr(self.server_info, 'sudoers_dump', None)
                 if sudoers_dump:
@@ -420,17 +399,12 @@ class HardeningDeployer:
                     f.write("\n```\n")
                 else:
                     f.write("*Sudoers dump not available.*\n")
-                
+
                 f.write("\n---\nGenerated by CCDC Fabric Deploy\n")
-                
+
             logger.info(f"Report generated: {report_path}")
             return str(report_path)
-            
+
         except Exception as e:
             logger.error(f"Failed to generate report: {e}")
             return ""
-
-    # Legacy method for backward compatibility
-    def deploy_scripts(self, script_categories: List[str] = None) -> bool:
-        """Legacy method stub"""
-        return False
