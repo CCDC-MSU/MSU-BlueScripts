@@ -70,7 +70,7 @@ def upload_tools(c, hosts_file='hosts.txt'):
         with _host_log_handler("tools", host_id) as log_path:
              try:
                 # Set up connection (similar boiler plate)
-                connect_kwargs = {'allow_agent': False, 'look_for_keys': False}
+                connect_kwargs = {'allow_agent': False, 'look_for_keys': False, 'timeout': 90}
                 config_overrides = {'sudo': {'password': None}}
                 if server_creds.key_file:
                     connect_kwargs['key_filename'] = server_creds.key_file
@@ -189,7 +189,8 @@ def run_script(c, file, hosts_file='hosts.txt', sudo=True, timeout=300, output_d
             # Set up connection
             connect_kwargs = {
                 'allow_agent': False,
-                'look_for_keys': False
+                'look_for_keys': False,
+                'timeout': 90
             }
             config_overrides = {
                 'sudo': {'password': None},

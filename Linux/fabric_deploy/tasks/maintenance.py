@@ -40,7 +40,7 @@ def reset_ssh(c, hosts_file='hosts.txt', restart=True):
         with _host_log_handler("reset-ssh", host_id, datetime.now().strftime("%Y%m%d_%H%M%S")) as log_path:
             try:
                 # Connection setup
-                connect_kwargs = {'allow_agent': False, 'look_for_keys': False}
+                connect_kwargs = {'allow_agent': False, 'look_for_keys': False, 'timeout': 90}
                 config_overrides = {'sudo': {'password': None}}
                 if server_creds.key_file:
                     connect_kwargs['key_filename'] = server_creds.key_file

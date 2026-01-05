@@ -37,7 +37,7 @@ def discover(c, host, user=None, key_file=None, password=None):
         password = CONFIG.get('connection', {}).get('password')
     
     # Handle authentication
-    connect_kwargs = {'allow_agent':False,'look_for_keys':False }
+    connect_kwargs = {'allow_agent': False, 'look_for_keys': False, 'timeout': 90}
     config_overrides = {
         'sudo': {'password': None},
         'load_ssh_configs': False  # Disable SSH config loading to avoid parse errors
@@ -119,7 +119,8 @@ def discover_all(c, hosts_file='hosts.txt'):
                 # Set up connection
                 connect_kwargs = {
                     'allow_agent': False,
-                    'look_for_keys': False
+                    'look_for_keys': False,
+                    'timeout': 90
                 }
                 config_overrides = {
                     'sudo': {'password': None},

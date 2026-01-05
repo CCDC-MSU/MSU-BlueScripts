@@ -53,7 +53,7 @@ class ModuleTester:
         
     def _connect_to_host(self, server_creds):
         """Establish connection to host"""
-        connect_kwargs = {'allow_agent':False,'look_for_keys':False }
+        connect_kwargs = {'allow_agent': False, 'look_for_keys': False, 'timeout': 90}
         config_overrides = {
             'sudo': {'password': None},
             'load_ssh_configs': False
