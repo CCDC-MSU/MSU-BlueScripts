@@ -253,53 +253,63 @@ class UserHardeningModule(HardeningModule):
         if not key_content:
              return HardeningResult(False, "configure_root_access", "Read Root Key", error="Root key file empty")
 
-        try:
-            # 1. Ensure .ssh directory exists and has correct permissions
-            conn.run("mkdir -p /root/.ssh", hide=True)
-            conn.run("chmod 700 /root/.ssh", hide=True)
-            
-            # 2. Check if key exists, if not append it
-            check = conn.run(f"grep -Fq '{key_content}' /root/.ssh/authorized_keys", warn=True, hide=True)
-            if check.failed:
-                conn.run(f"printf '\\n%s\\n' '{key_content}' >> /root/.ssh/authorized_keys", hide=True)
-                conn.run("chmod 600 /root/.ssh/authorized_keys", hide=True)
-                action_output = "Injected root key into authorized_keys"
-            else:
-                action_output = "Root key already present"
-
-            # 3. Update Fabric connection to use the private key for future operations checking if not already using a key
-            # Check if we are already using a key configuration
-            current_keys = conn.connect_kwargs.get('key_filename')
-            already_using_key = bool(current_keys)
-            
-            if already_using_key:
-                 logger.info("Connection already configured with key(s), skipping connection update.")
-                 action_output += ". Key auth already configured."
-            elif os.path.exists(ROOT_KEY_PATH_PRIVATE):
-                # Ensure key_filename is a list
-                if 'key_filename' not in conn.connect_kwargs:
-                    conn.connect_kwargs['key_filename'] = []
-                elif not isinstance(conn.connect_kwargs['key_filename'], list):
-                    conn.connect_kwargs['key_filename'] = [conn.connect_kwargs['key_filename']]
+        import time
+        max_retries = 3
+        
+        for attempt in range(1, max_retries + 1):
+            try:
+                # 1. Ensure .ssh directory exists and has correct permissions
+                conn.run("mkdir -p /root/.ssh", hide=True)
+                conn.run("chmod 700 /root/.ssh", hide=True)
                 
-                # Add private key if not already present
-                if ROOT_KEY_PATH_PRIVATE not in conn.connect_kwargs['key_filename']:
-                    conn.connect_kwargs['key_filename'].insert(0, ROOT_KEY_PATH_PRIVATE)
-                    logger.info(f"Updated Fabric connection to use private key: {ROOT_KEY_PATH_PRIVATE}")
-                    action_output += ". Updated connection to use private key."
-            else:
-                logger.warning(f"Private key not found at {ROOT_KEY_PATH_PRIVATE}. Cannot update connection.")
-                action_output += ". Warning: Private key missing locally."
+                # 2. Check if key exists, if not append it
+                check = conn.run(f"grep -Fq '{key_content}' /root/.ssh/authorized_keys", warn=True, hide=True)
+                if check.failed:
+                    conn.run(f"printf '\\n%s\\n' '{key_content}' >> /root/.ssh/authorized_keys", hide=True)
+                    conn.run("chmod 600 /root/.ssh/authorized_keys", hide=True)
+                    action_output = "Injected root key into authorized_keys"
+                else:
+                    action_output = "Root key already present"
 
-            return HardeningResult(True, "configure_root_access", "Configure Root Access", output=action_output)
+                # 3. Update Fabric connection to use the private key for future operations checking if not already using a key
+                # Check if we are already using a key configuration
+                current_keys = conn.connect_kwargs.get('key_filename')
+                already_using_key = bool(current_keys)
+                
+                if already_using_key:
+                     logger.info("Connection already configured with key(s), skipping connection update.")
+                     action_output += ". Key auth already configured."
+                elif os.path.exists(ROOT_KEY_PATH_PRIVATE):
+                    # Ensure key_filename is a list
+                    if 'key_filename' not in conn.connect_kwargs:
+                        conn.connect_kwargs['key_filename'] = []
+                    elif not isinstance(conn.connect_kwargs['key_filename'], list):
+                        conn.connect_kwargs['key_filename'] = [conn.connect_kwargs['key_filename']]
+                    
+                    # Add private key if not already present
+                    if ROOT_KEY_PATH_PRIVATE not in conn.connect_kwargs['key_filename']:
+                        conn.connect_kwargs['key_filename'].insert(0, ROOT_KEY_PATH_PRIVATE)
+                        logger.info(f"Updated Fabric connection to use private key: {ROOT_KEY_PATH_PRIVATE}")
+                        action_output += ". Updated connection to use private key."
+                else:
+                    logger.warning(f"Private key not found at {ROOT_KEY_PATH_PRIVATE}. Cannot update connection.")
+                    action_output += ". Warning: Private key missing locally."
 
-        except Exception as e:
-            if is_connection_reset(e):
-                error_msg = "Connection reset by peer (Firewall/Hostile Action)"
-            else:
-                error_msg = str(e)
-            logger.error(f"Failed to configure root access: {error_msg}")
-            return HardeningResult(False, "configure_root_access", "Configure Root Access", error=error_msg)
+                return HardeningResult(True, "configure_root_access", "Configure Root Access", output=action_output)
+
+            except Exception as e:
+                is_reset = is_connection_reset(e)
+                error_msg = "Connection reset by peer" if is_reset else str(e)
+                
+                if attempt < max_retries:
+                    logger.warning(f"Attempt {attempt}/{max_retries} failed: {error_msg}. Retrying in 2s...")
+                    time.sleep(2)
+                    # Re-establish connection if it was a reset
+                    if is_reset:
+                        conn.close()
+                else:
+                    logger.error(f"Failed to configure root access after {max_retries} attempts: {error_msg}")
+                    return HardeningResult(False, "configure_root_access", "Configure Root Access", error=error_msg)
 
     def get_commands(self) -> List[HardeningCommand]:
         commands: List[HardeningCommand] = []
