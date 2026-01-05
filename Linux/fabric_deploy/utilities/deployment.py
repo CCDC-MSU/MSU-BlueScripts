@@ -342,6 +342,14 @@ class HardeningOrchestrator:
         logger.info(f"Starting hardening deployment on {self.server_info.credentials.display_name} ({self.conn.host})")
         if dry_run:
             logger.info("DRY RUN MODE - No changes will be made")
+        
+        # Connection Warmer: Run a dummy command to ensure connection is active
+        # This prevents the first heavy operation from failing due to initial connection setup
+        try:
+            logger.info("Warming up connection...")
+            self.conn.run("true", hide=True, timeout=10)
+        except Exception as e:
+            logger.warning(f"Connection warm-up failed (proceeding anyway): {e}")
 
         results = self.apply_all(dry_run=dry_run, modules=modules)
         summary = self.get_summary(results)
