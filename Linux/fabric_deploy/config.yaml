@@ -1,7 +1,5 @@
 # Fabric Deployment Configuration
 
-# Fabric Deployment Configuration
-
 # Default Scripts
 # These scripts will run if no scripts are specified in the command line
 default_scripts:
