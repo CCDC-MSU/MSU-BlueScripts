@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from utilities.utils import load_config, parse_hosts_file, is_connection_reset
 from utilities.discovery import SystemDiscovery
-from utilities.deployment import HardeningDeployer
+from utilities.deployment import HardeningOrchestrator
 
 from .common import (
     _configure_parallel_logging,
@@ -80,8 +80,7 @@ def harden(c, hosts_file='hosts.txt', dry_run=False, modules=None,
              module_list = [m.strip() for m in modules.split(',')]
         console_logger.info(f"Applying modules: {module_list}")
 
-    # Resolve scripts to run - logic is handled inside HardeningDeployer usually,
-    # but fabfile handled the 'ALL' or custom list logic.
+    # Resolve scripts to run
     script_paths = []
     
     # Load config for defaults
@@ -126,7 +125,8 @@ def harden(c, hosts_file='hosts.txt', dry_run=False, modules=None,
                 # Set up connection
                 connect_kwargs = {
                     'allow_agent': False,
-                    'look_for_keys': False
+                    'look_for_keys': False,
+                    'timeout': 90
                 }
                 config_overrides = {
                     'sudo': {'password': None},
@@ -165,16 +165,8 @@ def harden(c, hosts_file='hosts.txt', dry_run=False, modules=None,
                         }
 
                     # Then deploy hardening
-                    deployer = HardeningDeployer(conn, server_info)
-                    
-                    result = deployer.deploy_hardening(
-                        dry_run=dry_run,
-                        modules=module_list,
-                        script_paths=script_paths
-                        # script_categories and priority_only are not currently supported by HardeningDeployer
-                        # script_categories=script_categories,
-                        # priority_only=priority_only
-                    )
+                    orchestrator = HardeningOrchestrator(conn, server_info, script_paths=script_paths)
+                    result = orchestrator.deploy(dry_run=dry_run, modules=module_list)
                     
                     # Tools upload
                     _upload_tools_internal(conn)
