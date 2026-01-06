@@ -21,16 +21,43 @@ TRUSTED_IPS = [
     "172.239.63.207"
 ]
 
+# Ports allowed in "allow_internet" mode (for package updates)
+# Format: {port: [protocols]}
+INTERNET_PORTS = {
+    53: ["udp", "tcp"],   # DNS
+    80: ["tcp"],          # HTTP
+    443: ["tcp"],         # HTTPS
+    123: ["udp"],         # NTP
+    25: ["tcp"],          # SMTP
+}
+
+# Firewall mode constants
+MODE_STRICT = "strict"
+MODE_ALLOW_INTERNET = "allow_internet"
+
 class FirewallHardeningModule(HardeningModule):
     """
     Firewall configuration module with Dead Man's Switch safety net.
     Supports: firewalld, iptables, nftables, pf, ipfw.
     """
     
-    def __init__(self, connection, server_info, os_family):
+    def __init__(self, connection, server_info, os_family, mode: str = MODE_STRICT):
+        """
+        Initialize firewall hardening module.
+        
+        Args:
+            connection: Fabric connection
+            server_info: ServerInfo object with system details
+            os_family: OS family string
+            mode: Firewall mode - "strict" (default) or "allow_internet"
+                  - strict: Only traffic from trusted IPs allowed
+                  - allow_internet: Allows outbound HTTP/HTTPS/DNS/NTP/SMTP for root user
+        """
         super().__init__(connection, server_info, os_family)
         self.dead_mans_switch_pid = None
         self.active_backend = None
+        self.mode = mode if mode in (MODE_STRICT, MODE_ALLOW_INTERNET) else MODE_STRICT
+        logger.info(f"Firewall module initialized with mode: {self.mode}")
 
     def get_name(self) -> str:
         return "firewall_hardening"
@@ -43,10 +70,14 @@ class FirewallHardeningModule(HardeningModule):
         # Logic mirrors lockdown.sh detection
         os_name = self.server_info.os.distro.lower()
         
-        # Check firewalld first (must be running)
         if conn.run("command -v firewall-cmd && firewall-cmd --state", warn=True, hide=True).ok:
             return "firewalld"
             
+        # Check UFW
+        if conn.run("command -v ufw", warn=True, hide=True).ok:
+             # ufw status might return 'inactive', but if binary exists we likely want to use it on Debian
+             return "ufw"
+             
         # BSD variants
         if "bsd" in os_name or "darwin" in os_name:
             if conn.run("command -v pfctl", warn=True, hide=True).ok:
@@ -81,9 +112,10 @@ class FirewallHardeningModule(HardeningModule):
         
         # Apply Rules (PythonAction that generates and runs backend-specific commands)
         # We use a PythonAction here because the specific commands depend on the detection step
+        mode_desc = "Trusted IPs ONLY" if self.mode == MODE_STRICT else "Trusted IPs + Internet (root only)"
         commands.append(PythonAction(
             function=self._apply_firewall_rules,
-            description="Apply firewall rules (Allow Trusted IPs ONLY)",
+            description=f"Apply firewall rules ({mode_desc})",
             requires_sudo=True
         ))
         
@@ -260,6 +292,8 @@ class FirewallHardeningModule(HardeningModule):
         try:
             if self.active_backend == "firewalld":
                 return self._apply_firewalld(conn)
+            elif self.active_backend == "ufw":
+                return self._apply_ufw(conn)
             elif self.active_backend == "iptables":
                 return self._apply_iptables(conn)
             elif self.active_backend == "nft":
@@ -274,6 +308,65 @@ class FirewallHardeningModule(HardeningModule):
              return HardeningResult(success=False, command="apply_rules", description="Apply Rules", error=str(e))
 
     # --- Backend Specific Implementations ---
+
+    def _apply_ufw(self, conn):
+        try:
+            # 0. Ensure conntrack
+            has_conntrack = self._ensure_conntrack_installed(conn)
+
+            # 1. Reset (flushes rules)
+            conn.sudo("echo 'y' | ufw reset", hide=True, timeout=30)
+            
+            # 2. Defaults
+            conn.sudo("ufw default deny incoming", hide=True)
+            conn.sudo("ufw default deny outgoing", hide=True)
+
+            # 3. Allow Loopback
+            conn.sudo("ufw allow in on lo", hide=True)
+            conn.sudo("ufw allow out on lo", hide=True)
+            
+            # 4. Trusted IPs
+            for ip in TRUSTED_IPS:
+                conn.sudo(f"ufw allow from {ip}", hide=True)
+                conn.sudo(f"ufw allow out to {ip}", hide=True)
+            
+            # 5. Allow Internet Mode (root only) - uses iptables directly
+            # UFW doesn't support owner matching, so we inject iptables rules
+            if self.mode == MODE_ALLOW_INTERNET:
+                logger.info("Adding allow_internet rules (root only) via iptables...")
+                for port, protocols in INTERNET_PORTS.items():
+                    for proto in protocols:
+                        # Outbound: Allow root user to initiate connections
+                        conn.sudo(
+                            f"iptables -I ufw-before-output -p {proto} --dport {port} "
+                            f"-m owner --uid-owner 0 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT",
+                            hide=True
+                        )
+                        # Inbound: Allow established/related responses
+                        conn.sudo(
+                            f"iptables -I ufw-before-input -p {proto} --sport {port} "
+                            f"-m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",
+                            hide=True
+                        )
+            
+            # 6. Enable
+            conn.sudo("echo 'y' | ufw enable", hide=True, timeout=30)
+            
+            # 7. Flush states
+            if has_conntrack:
+                try:
+                    conn.sudo("conntrack -F", hide=True, timeout=5)
+                except:
+                    pass
+                    
+        except CommandTimedOut:
+            logger.warning("UFW command timed out (likely session severed).")
+            return HardeningResult(success=True, command="apply_ufw", description="Applied UFW rules", output="Command timed out (Session severed)")
+        except Exception as e:
+            return HardeningResult(success=False, command="apply_ufw", description="Applied UFW rules", error=str(e))
+        
+        mode_info = f" (mode: {self.mode})"    
+        return HardeningResult(success=True, command="apply_ufw", description="Applied UFW rules", output=f"UFW rules applied{mode_info}")
 
     def _apply_firewalld(self, conn):
         # 1. Ensure Conntrack is present (for flushing state later)
@@ -290,14 +383,37 @@ class FirewallHardeningModule(HardeningModule):
             # Add Trusted IPs to trusted zone
             for ip in TRUSTED_IPS:
                 conn.sudo(f"firewall-cmd --zone=trusted --add-source={ip}", hide=True, timeout=30)
+
+            # Ensure SSH is explicitly allowed in trusted zone (redundancy)
+            conn.sudo("firewall-cmd --zone=trusted --add-service=ssh", warn=True, hide=True, timeout=30)
             
             # 4. Set Default Zone to Drop
             conn.sudo("firewall-cmd --set-default-zone=drop", hide=True, timeout=10)
             
-            # 5. FLUSH EXISTING CONNECTIONS (Critical Fix)
+            # 5. Allow Internet Mode (root only) - uses direct rules with owner matching
+            if self.mode == MODE_ALLOW_INTERNET:
+                logger.info("Adding allow_internet rules (root only) via firewalld direct rules...")
+                for port, protocols in INTERNET_PORTS.items():
+                    for proto in protocols:
+                        # Outbound: Allow root user to initiate connections
+                        conn.sudo(
+                            f"firewall-cmd --direct --add-rule ipv4 filter OUTPUT 1 "
+                            f"-p {proto} --dport {port} -m owner --uid-owner 0 "
+                            f"-m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT",
+                            hide=True, timeout=30
+                        )
+                        # Inbound: Allow established/related responses
+                        conn.sudo(
+                            f"firewall-cmd --direct --add-rule ipv4 filter INPUT 1 "
+                            f"-p {proto} --sport {port} "
+                            f"-m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",
+                            hide=True, timeout=30
+                        )
+            
+            # 6. FLUSH EXISTING CONNECTIONS (Critical Fix)
             # firewalld preserves state by default. We must flush it to kill 'evil' connections.
             # This might sever our own connection, so we expect timeouts.
-            logger.info("Applying Strict Rules: Flushing existing connection states...")
+            logger.info("Applying Rules: Flushing existing connection states...")
             
             try:
                 if has_conntrack:
@@ -319,7 +435,8 @@ class FirewallHardeningModule(HardeningModule):
         except Exception as e:
             return HardeningResult(success=False, command="apply_firewalld", description="Applied firewalld rules", error=str(e))
 
-        return HardeningResult(success=True, command="apply_firewalld", description="Applied firewalld rules", output="Zone rules applied & States Flushed")
+        mode_info = f" (mode: {self.mode})"
+        return HardeningResult(success=True, command="apply_firewalld", description="Applied firewalld rules", output=f"Zone rules applied & States Flushed{mode_info}")
 
     def _apply_iptables(self, conn):
         cmds = [
@@ -335,6 +452,22 @@ class FirewallHardeningModule(HardeningModule):
         for ip in TRUSTED_IPS:
             cmds.append(f"iptables -A INPUT -s {ip} -j ACCEPT")
             cmds.append(f"iptables -A OUTPUT -d {ip} -j ACCEPT")
+        
+        # Allow Internet Mode (root only)
+        if self.mode == MODE_ALLOW_INTERNET:
+            logger.info("Adding allow_internet rules (root only) to iptables...")
+            for port, protocols in INTERNET_PORTS.items():
+                for proto in protocols:
+                    # Outbound: Allow root user to initiate connections
+                    cmds.append(
+                        f"iptables -A OUTPUT -p {proto} --dport {port} "
+                        f"-m owner --uid-owner 0 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT"
+                    )
+                    # Inbound: Allow established/related responses
+                    cmds.append(
+                        f"iptables -A INPUT -p {proto} --sport {port} "
+                        f"-m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"
+                    )
             
         cmds.append("iptables -P INPUT DROP")
         cmds.append("iptables -P FORWARD DROP")
@@ -347,7 +480,8 @@ class FirewallHardeningModule(HardeningModule):
              logger.warning("IPTables command timed out (likely connection severed).")
              return HardeningResult(success=True, command="apply_iptables", description="Applied iptables rules", output="Command timed out (Session severed)")
         
-        return HardeningResult(success=True, command="apply_iptables", description="Applied iptables rules", output="Rules applied")
+        mode_info = f" (mode: {self.mode})"
+        return HardeningResult(success=True, command="apply_iptables", description="Applied iptables rules", output=f"Rules applied{mode_info}")
 
     def _apply_nft(self, conn):
         # Build nftables config file content
@@ -366,8 +500,24 @@ class FirewallHardeningModule(HardeningModule):
         for ip in TRUSTED_IPS:
             config_lines.append(f"add rule inet filter input ip saddr {ip} accept")
             config_lines.append(f"add rule inet filter output ip daddr {ip} accept")
+        
+        # Allow Internet Mode (root only) - uses meta skuid for user matching
+        if self.mode == MODE_ALLOW_INTERNET:
+            logger.info("Adding allow_internet rules (root only) to nftables config...")
+            for port, protocols in INTERNET_PORTS.items():
+                for proto in protocols:
+                    # Outbound: Allow root user (uid 0) to initiate connections
+                    config_lines.append(
+                        f"add rule inet filter output {proto} dport {port} "
+                        f"meta skuid 0 ct state new,established accept"
+                    )
+                    # Inbound: Allow established/related responses
+                    config_lines.append(
+                        f"add rule inet filter input {proto} sport {port} "
+                        f"ct state established,related accept"
+                    )
             
-        full_config = "\n".join(config_lines)
+        full_config = "\\n".join(config_lines)
         
         try:
             # Write config to file
@@ -381,8 +531,9 @@ class FirewallHardeningModule(HardeningModule):
             return HardeningResult(success=True, command="apply_nft", description="Applied nftables rules", output="Command timed out (Session severed)")
         except Exception as e:
             return HardeningResult(success=False, command="apply_nft", description="Applied nftables rules", error=str(e))
-            
-        return HardeningResult(success=True, command="apply_nft", description="Applied nftables rules", output="Rules applied via config file")
+        
+        mode_info = f" (mode: {self.mode})"    
+        return HardeningResult(success=True, command="apply_nft", description="Applied nftables rules", output=f"Rules applied via config file{mode_info}")
 
     def _apply_pf(self, conn):
         pf_conf = "/tmp/pf.conf.go_dark"
@@ -391,16 +542,34 @@ class FirewallHardeningModule(HardeningModule):
         lo_if = "lo0"
         if conn.run("ifconfig lo0", warn=True, hide=True).failed:
             lo_if = "lo"
+        
+        # Build base config
+        conf_lines = [
+            f"table <trusted_ssh> {{ {trusted_str} }}",
+            "set block-policy drop",
+            f"set skip on {lo_if}",
+            "block in all",
+            "block out all",
+            "pass in from <trusted_ssh> to any no state",
+            "pass out from any to <trusted_ssh> no state"
+        ]
+        
+        # Allow Internet Mode
+        # NOTE: pf doesn't have native user-level filtering like iptables' owner match
+        # Internet access will be allowed for all users when in this mode
+        if self.mode == MODE_ALLOW_INTERNET:
+            logger.info("Adding allow_internet rules to pf config (user filtering not available on BSD)...")
+            # DNS (UDP/TCP)
+            conf_lines.append("pass out proto { udp tcp } to any port 53 keep state")
+            # HTTP/HTTPS
+            conf_lines.append("pass out proto tcp to any port { 80 443 } keep state")
+            # NTP
+            conf_lines.append("pass out proto udp to any port 123 keep state")
+            # SMTP
+            conf_lines.append("pass out proto tcp to any port 25 keep state")
             
-        conf_content = f"""
-table <trusted_ssh> {{ {trusted_str} }}
-set block-policy drop
-set skip on {lo_if}
-block in all
-block out all
-pass in from <trusted_ssh> to any no state
-pass out from any to <trusted_ssh> no state
-"""
+        conf_content = "\n".join(conf_lines)
+        
         try:
             # Write config
             conn.sudo(f"printf '%s' '{conf_content}' > {pf_conf}", hide=True)
@@ -414,12 +583,13 @@ pass out from any to <trusted_ssh> no state
         except Exception as e:
             return HardeningResult(success=False, command="apply_pf", description="Applied PF rules", error=str(e))
 
-        
-        return HardeningResult(success=True, command="apply_pf", description="Applied PF rules", output="PF rules loaded")
+        mode_info = f" (mode: {self.mode})"
+        return HardeningResult(success=True, command="apply_pf", description="Applied PF rules", output=f"PF rules loaded{mode_info}")
 
     def _apply_ipfw(self, conn):
         try:
             conn.sudo("ipfw -q flush", hide=True, timeout=10)
+            conn.sudo("ipfw add 10 check-state", hide=True, timeout=10)  # Enable stateful tracking
             conn.sudo("ipfw add 50 allow ip from any to any via lo0", hide=True, timeout=10)
             
             rule_id = 100
@@ -427,6 +597,19 @@ pass out from any to <trusted_ssh> no state
                 conn.sudo(f"ipfw add {rule_id} allow ip from {ip} to me in", hide=True, timeout=10)
                 conn.sudo(f"ipfw add {rule_id+1} allow ip from me to {ip} out", hide=True, timeout=10)
                 rule_id += 10
+            
+            # Allow Internet Mode (root only) - uses uid matching
+            if self.mode == MODE_ALLOW_INTERNET:
+                logger.info("Adding allow_internet rules (root only) to ipfw...")
+                base_rule = 200
+                for port, protocols in INTERNET_PORTS.items():
+                    for proto in protocols:
+                        # Outbound: Allow root user (uid 0) to initiate connections with state tracking
+                        conn.sudo(
+                            f"ipfw add {base_rule} allow {proto} from me to any {port} out uid 0 keep-state",
+                            hide=True, timeout=10
+                        )
+                        base_rule += 10
                 
             # Deny rest
             conn.sudo("ipfw add 65000 deny ip from any to any", hide=True, timeout=10)
@@ -436,7 +619,8 @@ pass out from any to <trusted_ssh> no state
         except Exception as e:
             return HardeningResult(success=False, command="apply_ipfw", description="Applied IPFW rules", error=str(e))
 
-        return HardeningResult(success=True, command="apply_ipfw", description="Applied IPFW rules", output="IPFW rules applied")
+        mode_info = f" (mode: {self.mode})"
+        return HardeningResult(success=True, command="apply_ipfw", description="Applied IPFW rules", output=f"IPFW rules applied{mode_info}")
 
     def _test_connectivity(self, conn, server_info):
         """Verify we are not locked out; disarm DMS on success"""
@@ -458,6 +642,7 @@ pass out from any to <trusted_ssh> no state
         config = Config(overrides={'sudo': {'password': password}, 'load_ssh_configs': False})
         
         logger.info(f"Verifying connectivity to {host}...")
+        time.sleep(5) # Allow network stack to settle after flush
         try:
             # We must use a NEW connection to verify
             with Connection(host, user=user, port=port, config=config, connect_kwargs=connect_kwargs) as test_conn:

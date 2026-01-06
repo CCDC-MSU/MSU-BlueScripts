@@ -46,6 +46,7 @@ tasks/                  # Fabric task definitions
   tools.py              # Script deployment utilities
   maintenance.py        # Recovery operations
   testing.py            # Test environment setup
+  ansible.py            # Ansible integration tasks (NEW)
 utilities/
   models.py             # Data classes: ServerInfo, UserInfo, OSInfo, etc.
   discovery.py          # SystemDiscovery class - OS/user/service detection
@@ -58,11 +59,46 @@ utilities/
     ssh_hardening.py    # sshd_config hardening, honeypot traps, Dead Man's Switch
     firewall_hardening.py  # Multi-backend firewall (firewalld/iptables/nftables/pf/ipfw)
     package_installer.py   # Cross-distro package management
-    logging_setup.py    # rsyslog/auditd/journald configuration
+    logging_setup.py    # rsyslog/auditd/journald - HYBRID Ansible+Fabric (NEW)
 scripts/all/            # Bash scripts deployed to remote hosts
   lockdown.sh           # Immediate firewall lockdown + panic button
   pre-hardening-snapshot.sh  # System state capture
+ansible/                # Ansible integration (NEW)
+  ansible.cfg           # Ansible configuration
+  generate_configs.py   # Auto-generates inventory and templates from hosts.txt
+  inventory/            # Auto-generated Ansible inventory
+    hosts.yaml          # Generated from hosts.txt
+  group_vars/           # Auto-generated group variables
+    all.yml             # Generated from users.json
+  playbooks/            # Ansible playbooks
+    install_logging_packages.yaml  # Cross-distro package installation
+  roles/                # Ansible roles
+    logging_setup/      # Role for logging setup
 ```
+
+## Hybrid Ansible/Fabric Integration
+
+**Introduced:** 2026-01-05 to solve cross-distro package management challenges
+
+The system uses a **hybrid approach** for certain operations:
+- **Ansible** handles cross-distro package installation (currently: logging packages)
+- **Fabric** handles everything else (discovery, configuration, service management)
+
+**Key Benefits:**
+- Ansible abstracts package name differences (e.g., "auditd" vs "audit")
+- Fabric retains direct SSH control for complex logic
+- Auto-generated inventory from `hosts.txt` - always in sync
+- Zero dependencies on target hosts (Ansible runs from control node)
+
+**Current Integration:**
+- `logging_setup` module uses Ansible for package installation only
+- Pattern is reusable for other modules if needed
+
+**Requirements:**
+- Ansible 2.14+ must be installed on control node
+- Run `ansible --version` to verify
+
+See `docs/ANSIBLE_INTEGRATION.md` for complete documentation.
 
 ## Configuration Files
 

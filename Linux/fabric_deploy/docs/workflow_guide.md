@@ -48,23 +48,22 @@ fab harden
 3.  **User Hardening (Round 1)**: 
     - Changes passwords for all users (except those in `do_not_change_users`) to prevent immediate access by Red Team.
     - Saves new passwords to `logs/user-hardening/<host>/passwords_<date>.txt`.
-4.  **Firewall Setup**: 
-    - Installing/Enabling the appropriate firewall (ufw/firewalld/iptables).
-    - Blocks ALL incoming traffic except SSH from our Trusted IPs.
-5.  **Lockdown Script**: 
-    - Runs `lockdown.sh` as a secondary enforcement layer.
-    - Blocks new outbound connections (stops reverse shells).
-6.  **SSH Hardening**: 
+4.  **Firewall (Strict Mode)**: 
+    - Installing/Enabling the appropriate firewall (ufw/firewalld/iptables/nftables/pf/ipfw).
+    - Blocks ALL traffic except SSH from our Trusted IPs (inbound and outbound).
+    - Uses Dead Man's Switch for safety (auto-reverts if connection lost).
+5.  **SSH Hardening**: 
     - Configures `sshd_config` (Protocol 2, PubKey only).
     - Sets up "Honeypot Traps" for suspicious users.    (max of 2 per system, check Linux/fabric_deploy/utilities/modules/ssh_hardening.py and /home/antimony/Desktop/cyber/repos/MSU-BlueScripts/Linux/fabric_deploy/scripts/helpers/blue-sweet-tooth.sh for more information)
     - **Dead Man's Switch**: Reverts changes if connection is lost.
-7.  **Script Uploads**: Pushes helper scripts to `/root/scripts`.
-8.  **Local Fixes**: Runs offline scripts like `fix-file-permissions.sh`.
-9.  **Reboot**: Clears memory-resident malware.
-10. **User Hardening (Round 2)**: Rotates passwords *again* post-reboot to ensure no malware captured them.
-11. **Allow Internet**: Relaxes firewall for updates (`lockdown.sh --allow-internet`).  (everything up to this point should take no more than a couple of minutes)
-12. **Install & Update**: Installs various packages, and updates packages.
-13. **Logging Setup**: Configures `auditd` and `rsyslog` for deep visibility.
+6.  **Script Uploads**: Pushes helper scripts to `/root/scripts`.
+7.  **Reboot**: Clears memory-resident malware.
+8.  **Discovery (Refresh)**: Re-profiles the system after reboot.
+9.  **User Hardening (Round 2)**: Rotates passwords *again* post-reboot to ensure no malware captured them.
+10. **Firewall (Allow Internet Mode)**: Opens outbound HTTP/HTTPS/DNS/NTP/SMTP for **root user only** to enable package updates. (everything up to this point should take no more than a couple of minutes)
+11. **Install & Update**: Installs various packages, and updates packages.
+12. **Logging Setup**: Configures `auditd` and `rsyslog` for deep visibility.
+13. **Firewall (Final Lockdown)**: Returns to strict mode, blocking all traffic except trusted IPs.
 14. **Final Snapshot**: Captures the hardened state.
 
 ---

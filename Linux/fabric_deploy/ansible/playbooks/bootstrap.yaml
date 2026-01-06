@@ -1,0 +1,86 @@
+---
+# Bootstrap playbook - ensures Python is installed on all hosts
+# Uses raw module which doesn't require Python
+
+- name: Bootstrap Python on all hosts
+  hosts: all
+  gather_facts: false
+  become: true
+
+  tasks:
+    - name: Check if Python3 exists
+      raw: command -v python3
+      register: python_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install Python3 on Debian/Ubuntu
+      raw: |
+        if command -v apt-get >/dev/null 2>&1; then
+          apt-get update && apt-get install -y python3 python3-apt
+        fi
+      when: python_check.rc != 0
+
+    - name: Install Python3 on RHEL/CentOS/Fedora
+      raw: |
+        if command -v dnf >/dev/null 2>&1; then
+          dnf install -y python3
+        elif command -v yum >/dev/null 2>&1; then
+          yum install -y python3
+        fi
+      when: python_check.rc != 0
+
+    - name: Install Python3 on Alpine
+      raw: |
+        if command -v apk >/dev/null 2>&1; then
+          apk update && apk add python3
+        fi
+      when: python_check.rc != 0
+
+    - name: Install Python3 on Arch
+      raw: |
+        if command -v pacman >/dev/null 2>&1; then
+          pacman -Sy --noconfirm python
+        fi
+      when: python_check.rc != 0
+
+    - name: Install Python3 on openSUSE
+      raw: |
+        if command -v zypper >/dev/null 2>&1; then
+          zypper --non-interactive install python3
+        fi
+      when: python_check.rc != 0
+
+    - name: Install Python3 on Slackware
+      raw: |
+        if command -v slackpkg >/dev/null 2>&1; then
+          # Python3 should be in base Slackware
+          slackpkg update && slackpkg install python3 2>/dev/null || true
+        fi
+      when: python_check.rc != 0
+
+    - name: Install Python3 on Gentoo
+      raw: |
+        if command -v emerge >/dev/null 2>&1; then
+          emerge --ask=n dev-lang/python
+        fi
+      when: python_check.rc != 0
+
+    - name: Verify Python3 installation
+      raw: python3 --version
+      register: python_version
+      changed_when: false
+
+    - name: Display Python version
+      debug:
+        msg: "Python version: {{ python_version.stdout | trim }}"
+
+
+- name: Gather facts after bootstrap
+  hosts: all
+  gather_facts: true
+
+  tasks:
+    - name: Display OS information
+      debug:
+        msg: "{{ ansible_distribution }} {{ ansible_distribution_version }} ({{ ansible_os_family }})"

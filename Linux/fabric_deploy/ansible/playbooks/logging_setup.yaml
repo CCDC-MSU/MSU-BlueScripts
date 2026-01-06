@@ -1,0 +1,19 @@
+---
+# Logging Setup Playbook
+# Configures rsyslog, auditd, journald, and logrotate across all Linux hosts
+
+- name: Setup comprehensive logging on all hosts
+  hosts: linux
+  become: true
+  gather_facts: true
+
+  roles:
+    - logging_setup
+
+  post_tasks:
+    - name: Display logging setup summary
+      debug:
+        msg: |
+          Logging setup completed for {{ inventory_hostname }}
+          OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          Init: {{ ansible_service_mgr }}

@@ -2,7 +2,17 @@
 
 **Go back to [main README](README.md)**
 
+**See also:** [Ansible Integration Guide](ANSIBLE_INTEGRATION.md) for details on cross-distro package management.
+
 This module provides a comprehensive logging setup for both Linux and BSD systems, designed to capture a wide range of security-relevant events.
+
+## Hybrid Ansible/Fabric Architecture
+
+**NEW:** This module uses a hybrid approach:
+- **Ansible** handles cross-distro package installation (rsyslog, auditd, logrotate)
+- **Fabric** handles all configuration deployment and service management
+
+This solves the challenge of different package names across distributions (e.g., "auditd" on Debian vs "audit" on RHEL). See [ANSIBLE_INTEGRATION.md](ANSIBLE_INTEGRATION.md) for complete details.
 
 ## Overview
 
