@@ -18,6 +18,8 @@ from .modules import (
     LoggingSetupModule,
     SSHHardeningModule,
     FirewallHardeningModule,
+    MODE_STRICT,
+    MODE_ALLOW_INTERNET,
     BashScriptHardeningModule,
     UserHardeningModule,
 )
@@ -42,35 +44,35 @@ DEFAULT_PIPELINE = [
     # 3. User Hardening (Passwords)
     PipelineStep('module', 'user_hardening'),
     
-    # 4. Firewall (Install/Enable)
+    # 4. Firewall (Strict Mode - Trusted IPs only)
     PipelineStep('module', 'firewall_hardening'),
     
-    # 5. Lockdown (Panic Button)
-    PipelineStep('script', 'scripts/all/lockdown.sh'),
-    
-    # 6. SSH Hardening
+    # 5. SSH Hardening
     PipelineStep('module', 'ssh_hardening'),
 
-    # 7. Run any additional custom scripts
+    # 6. Run any additional custom scripts
     PipelineStep('module', 'bash_scripts'),
     
-    # 8. Reboot (Clean slate)
+    # 7. Reboot (Clean slate)
     PipelineStep('action', 'reboot'),
     
-    # 9. Discovery (Refresh facts after reboot)
+    # 8. Discovery (Refresh facts after reboot)
     PipelineStep('action', 'discovery'),
 
-    # 10. User Hardening (Rotate again)
+    # 9. User Hardening (Rotate again)
     PipelineStep('module', 'user_hardening'),
     
-    # 11. Allow Internet (via lockdown script)
-    PipelineStep('script', 'scripts/all/lockdown.sh', args={'env': {'ALLOW_INTERNET': '1'}, 'args': '--allow-internet'}),
+    # 10. Firewall (Allow Internet Mode - for package updates)
+    PipelineStep('module', 'firewall_hardening_allow_internet'),
     
-    # 12. Packages & Tools
+    # 11. Packages & Tools
     PipelineStep('module', 'package_installer'),
     
-    # 13. Logging
+    # 12. Logging
     PipelineStep('module', 'logging_setup'),
+    
+    # 13. Final Lockdown (Return to Strict Mode)
+    PipelineStep('module', 'firewall_hardening'),
     
     # 14. Final Snapshot
     PipelineStep('script', 'scripts/all/pre-hardening-snapshot.sh'),
@@ -84,13 +86,15 @@ class HardeningOrchestrator:
 
     def __init__(self, connection: Connection, server_info: ServerInfo,
                  script_paths: Optional[List[str]] = None,
-                 pipeline: Optional[List[PipelineStep]] = None):
+                 pipeline: Optional[List[PipelineStep]] = None,
+                 firewall_mode: str = MODE_STRICT):
         self.conn = connection
         self.server_info = server_info
         # Extract OS family from discovery
         discovery = getattr(server_info, '_discovery', None)
         self.os_family = getattr(discovery, 'os_family', 'unknown') if discovery else 'unknown'
         self.script_paths = script_paths
+        self.firewall_mode = firewall_mode
         self.modules_map = self._initialize_modules_map()
         self.pipeline = pipeline or DEFAULT_PIPELINE
     
@@ -101,12 +105,21 @@ class HardeningOrchestrator:
             PackageInstallerModule(self.conn, self.server_info, self.os_family),
             LoggingSetupModule(self.conn, self.server_info, self.os_family),
             SSHHardeningModule(self.conn, self.server_info, self.os_family),
-            FirewallHardeningModule(self.conn, self.server_info, self.os_family),
+            # Strict mode firewall (default)
+            FirewallHardeningModule(self.conn, self.server_info, self.os_family, mode=MODE_STRICT),
             UserHardeningModule(self.conn, self.server_info, self.os_family),
             BashScriptHardeningModule(self.conn, self.server_info, self.os_family, 
                                     script_paths=self.script_paths),
         ]
-        return {m.get_name(): m for m in modules}
+        modules_map = {m.get_name(): m for m in modules}
+        
+        # Add a second firewall instance for allow_internet mode with a distinct name
+        firewall_allow_internet = FirewallHardeningModule(
+            self.conn, self.server_info, self.os_family, mode=MODE_ALLOW_INTERNET
+        )
+        modules_map['firewall_hardening_allow_internet'] = firewall_allow_internet
+        
+        return modules_map
     
     def get_applicable_modules(self) -> List[HardeningModule]:
         """Get list of applicable modules for this system"""

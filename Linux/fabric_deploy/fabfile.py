@@ -28,18 +28,32 @@ from tasks.hardening import harden, deploy_scripts, test_module, list_modules, t
 from tasks.tools import upload_tools, run_script
 from tasks.maintenance import reset_ssh
 from tasks.testing import setup_test_env
+from tasks.ansible import (
+    ansible_sync, ansible_ping, ansible_facts,
+    ansible_bootstrap, ansible_logging, ansible_run,
+    ansible_shell, list_playbooks
+)
 
 # Define __all__ to explicitely export tasks if needed (not strictly required by Fabric but good practice)
 __all__ = [
     'discover',
     'discover_all',
     'harden',
-    'deploy_scripts', 
+    'deploy_scripts',
     'test_module',
     'list_modules',
     'test_all_modules',
     'upload_tools',
     'run_script',
     'reset_ssh',
-    'setup_test_env'
+    'setup_test_env',
+    # Ansible integration
+    'ansible_sync',
+    'ansible_ping',
+    'ansible_facts',
+    'ansible_bootstrap',
+    'ansible_logging',
+    'ansible_run',
+    'ansible_shell',
+    'list_playbooks',
 ]

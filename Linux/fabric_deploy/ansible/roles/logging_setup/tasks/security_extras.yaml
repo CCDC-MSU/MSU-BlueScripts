@@ -1,0 +1,61 @@
+---
+# Additional security logging configuration
+
+- name: Enable bash history timestamps
+  lineinfile:
+    path: /etc/bash.bashrc
+    line: 'export HISTTIMEFORMAT="%F %T "'
+    regexp: '^export HISTTIMEFORMAT='
+    create: yes
+  failed_when: false
+
+- name: Increase bash history size
+  lineinfile:
+    path: /etc/bash.bashrc
+    line: 'export HISTSIZE=10000'
+    regexp: '^export HISTSIZE='
+    create: yes
+  failed_when: false
+
+- name: Enable bash history for profile.d
+  copy:
+    content: |
+      # CCDC Security - Enhanced bash history
+      export HISTTIMEFORMAT="%F %T "
+      export HISTSIZE=10000
+      export HISTFILESIZE=20000
+      shopt -s histappend
+    dest: /etc/profile.d/ccdc-history.sh
+    mode: '0644'
+  failed_when: false
+
+- name: Check for process accounting tools
+  command: command -v accton
+  register: accton_check
+  changed_when: false
+  failed_when: false
+
+- name: Check if auditd is running
+  command: pgrep -x auditd
+  register: auditd_running
+  changed_when: false
+  failed_when: false
+
+- name: Enable process accounting (if auditd not present)
+  block:
+    - name: Create process accounting log
+      file:
+        path: /var/log/pacct
+        state: touch
+        mode: '0640'
+        modification_time: preserve
+        access_time: preserve
+
+    - name: Enable process accounting
+      command: accton /var/log/pacct
+      register: accton_result
+      failed_when: false
+  when:
+    - accton_check.rc == 0
+    - auditd_running.rc != 0
+  ignore_errors: true

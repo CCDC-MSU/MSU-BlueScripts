@@ -1,0 +1,35 @@
+---
+# Configure auditd
+
+- name: Check if auditctl is available
+  command: command -v auditctl
+  register: auditctl_available
+  changed_when: false
+  failed_when: false
+
+- name: Configure auditd
+  when: auditctl_available.rc == 0
+  block:
+    - name: Ensure audit rules directory exists
+      file:
+        path: /etc/audit/rules.d
+        state: directory
+        mode: '0750'
+
+    - name: Deploy CCDC audit rules
+      template:
+        src: audit-ccdc.rules.j2
+        dest: /etc/audit/rules.d/ccdc.rules
+        mode: '0640'
+      notify: restart auditd
+
+    - name: Load audit rules
+      command: auditctl -R /etc/audit/rules.d/ccdc.rules
+      register: load_rules
+      changed_when: load_rules.rc == 0
+      failed_when: false
+
+- name: Auditd not available
+  debug:
+    msg: "auditctl not available - skipping audit configuration"
+  when: auditctl_available.rc != 0

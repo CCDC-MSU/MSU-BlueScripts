@@ -1,10 +1,13 @@
 """
 Logging Setup Module
 Configures rsyslog, auditd, and other logging mechanisms using external configuration files.
+
+Uses Ansible for cross-distro package installation, then configures via SSH commands.
 """
 
 import os
 import logging
+import subprocess
 import time
 from typing import List
 from pathlib import Path
@@ -12,6 +15,9 @@ from .base import HardeningModule, HardeningCommand, HardeningResult, PythonActi
 from ..discovery import OSFamily
 
 logger = logging.getLogger(__name__)
+
+# Path to ansible directory (relative to this file)
+ANSIBLE_DIR = Path(__file__).parent.parent.parent / "ansible"
 
 class LoggingSetupModule(HardeningModule):
     """Configure comprehensive logging for CCDC scenarios"""
@@ -59,6 +65,125 @@ class LoggingSetupModule(HardeningModule):
             f"sysrc {service}_enable=YES 2>/dev/null || "
             f"echo 'Failed to enable {service}')"
         )
+
+    def _get_ansible_hostname_for_ip(self, ip: str) -> str:
+        """Look up the Ansible inventory hostname for a given IP address"""
+        import yaml
+        inventory_file = ANSIBLE_DIR / "inventory" / "hosts.yaml"
+
+        if not inventory_file.exists():
+            return ip
+
+        try:
+            with open(inventory_file, 'r') as f:
+                inventory = yaml.safe_load(f)
+
+            # Search through all groups to find host with matching ansible_host
+            def search_hosts(node):
+                if isinstance(node, dict):
+                    # Check if this is a host entry with ansible_host
+                    if 'ansible_host' in node:
+                        if node['ansible_host'] == ip:
+                            return True
+                    # Recurse into children and hosts
+                    for key, value in node.items():
+                        if key == 'hosts' and isinstance(value, dict):
+                            for hostname, host_vars in value.items():
+                                if isinstance(host_vars, dict) and host_vars.get('ansible_host') == ip:
+                                    return hostname
+                        result = search_hosts(value)
+                        if result and result is not True:
+                            return result
+                return None
+
+            result = search_hosts(inventory)
+            if result and result is not True:
+                return result
+        except Exception as e:
+            logger.debug(f"Could not look up hostname for {ip}: {e}")
+
+        return ip
+
+    def _install_packages_via_ansible(self, conn, server_info) -> HardeningResult:
+        """
+        Use Ansible to install logging packages (rsyslog, auditd, logrotate).
+        This handles cross-distro package name differences automatically.
+        """
+        host = server_info.host if hasattr(server_info, 'host') else conn.host
+        friendly_name = getattr(server_info, 'friendly_name', None)
+
+        # Look up the Ansible inventory hostname by IP if we don't have a friendly name
+        if not friendly_name:
+            friendly_name = self._get_ansible_hostname_for_ip(host)
+
+        # Ansible inventory uses friendly_name as host key
+        limit_target = friendly_name if friendly_name != host else host
+        display_name = friendly_name or host
+
+        logger.info(f"Installing logging packages via Ansible on {display_name} (limit: {limit_target})...")
+
+        # First sync configs to ensure inventory is up to date
+        sync_result = subprocess.run(
+            ['python3', 'generate_configs.py'],
+            cwd=str(ANSIBLE_DIR),
+            capture_output=True,
+            text=True
+        )
+
+        if sync_result.returncode != 0:
+            logger.warning(f"Config sync warning: {sync_result.stderr}")
+
+        env = os.environ.copy()
+        env['ANSIBLE_CONFIG'] = str(ANSIBLE_DIR / 'ansible.cfg')
+        env['ANSIBLE_HOST_KEY_CHECKING'] = 'False'
+
+        result = subprocess.run(
+            [
+                'ansible-playbook',
+                'playbooks/install_logging_packages.yaml',
+                '--limit', limit_target,
+                '-v'
+            ],
+            cwd=str(ANSIBLE_DIR),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=300  # 5 minute timeout
+        )
+
+        if result.returncode == 0:
+            logger.info(f"Ansible package installation completed for {display_name}")
+            return HardeningResult(
+                success=True,
+                command="ansible install_logging_packages",
+                description="Install logging packages via Ansible",
+                output="Packages installed successfully"
+            )
+        else:
+            # Log the error but don't fail - packages might already be installed
+            # or the host might not be in Ansible inventory
+            logger.warning(f"Ansible installation returned non-zero for {display_name}")
+            logger.debug(f"Ansible stdout: {result.stdout}")
+            logger.debug(f"Ansible stderr: {result.stderr}")
+
+            # Check if packages are available despite Ansible failure
+            rsyslog_ok = conn.run("command -v rsyslogd", warn=True, hide=True).ok
+            auditd_ok = conn.run("command -v auditctl", warn=True, hide=True).ok
+
+            if rsyslog_ok or auditd_ok:
+                return HardeningResult(
+                    success=True,
+                    command="ansible install_logging_packages",
+                    description="Install logging packages via Ansible",
+                    output=f"Packages present (rsyslog: {rsyslog_ok}, auditd: {auditd_ok})"
+                )
+
+            return HardeningResult(
+                success=False,
+                command="ansible install_logging_packages",
+                description="Install logging packages via Ansible",
+                error=f"Ansible failed and packages not found. stderr: {result.stderr[:500]}"
+            )
             
     def get_commands(self) -> List[HardeningCommand]:
         try:
@@ -74,28 +199,21 @@ class LoggingSetupModule(HardeningModule):
     def _get_linux_commands(self) -> List[HardeningCommand]:
         """Commands for Linux systems"""
         commands = []
-        
-        # Ensure rsyslog is installed (PythonAction)
+
+        # Step 1: Install all logging packages via Ansible (handles cross-distro differences)
         commands.append(PythonAction(
-            function=self._ensure_rsyslog_installed,
-            description="Ensure rsyslog is installed and enabled",
-            requires_sudo=True
-        ))
-        
-        # Configure rsyslog
-        commands.extend(self._configure_rsyslog())
-        
-        # Configure systemd journald (if systemd is present)
-        commands.extend(self._configure_journald())
-        
-        # Ensure auditd is installed (PythonAction)
-        commands.append(PythonAction(
-            function=self._ensure_auditd_installed,
-            description="Ensure auditd is installed and enabled",
-            requires_sudo=True
+            function=self._install_packages_via_ansible,
+            description="Install logging packages via Ansible (rsyslog, auditd, logrotate)",
+            requires_sudo=False  # Ansible handles sudo internally
         ))
 
-        # Configure auditd for security auditing
+        # Step 2: Configure rsyslog (Fabric handles configuration)
+        commands.extend(self._configure_rsyslog())
+
+        # Step 3: Configure systemd journald (if systemd is present)
+        commands.extend(self._configure_journald())
+
+        # Step 4: Configure auditd for security auditing (Fabric handles configuration)
         commands.extend(self._configure_auditd())
         
         # Configure logrotate
@@ -112,6 +230,16 @@ class LoggingSetupModule(HardeningModule):
         
         # Configure BSD syslogd
         commands.extend(self._configure_bsd_syslog())
+        
+        # Ensure BSD Audit is enabled (PythonAction)
+        commands.append(PythonAction(
+            function=self._ensure_bsd_audit_enabled,
+            description="Ensure BSD Audit is enabled",
+            requires_sudo=True
+        ))
+
+        # Configure BSD Audit
+        commands.extend(self._configure_bsd_audit())
         
         # Configure newsyslog (BSD log rotation)
         commands.extend(self._configure_newsyslog())
@@ -130,7 +258,6 @@ class LoggingSetupModule(HardeningModule):
         pms = server_info.package_managers
         cmd = None
         
-        # Priority order for package managers (though usually only one is pertinent)
         if "dnf" in pms:
             cmd = "dnf install -y rsyslog"
         elif "yum" in pms:
@@ -140,38 +267,25 @@ class LoggingSetupModule(HardeningModule):
         elif "zypper" in pms:
             cmd = "zypper --non-interactive install rsyslog"
         elif "pacman" in pms:
-            # Arch needs rsyslog-gnutls or similar usually, but 'rsyslog' is in AUR or sometimes distinct repos.
-            # However, 'rsyslog' is standard package name in official repos (extra).
-            # If it failed with target not found, maybe repo sync needed.
             cmd = "pacman -Sy --noconfirm rsyslog" 
         elif "emerge" in pms:
             cmd = "PAGER=cat emerge --ask=n app-admin/rsyslog"
         elif "apk" in pms:
-            # Alpine sometimes needs update first if index is stale
             cmd = "apk update && apk add rsyslog"
         elif "pkg" in pms:
             cmd = "pkg install -y rsyslog"
         elif "slackpkg" in pms or "sbopkg" in pms:
-             # Slackware: rsyslog is in SBo. sbopkg can install it.
-             # If sbopkg is present, use it.
              if "sbopkg" in pms:
                  cmd = "sbopkg -B -e -i rsyslog"
              else:
-                 # Manually install if only slackpkg (which manages base system)? 
-                 # rsyslog is NOT in base Slackware (sysklogd is). 
-                 # We can try to rely on native syslogd if rsyslog install fails, but here we are ensuring rsyslog.
-                 # Let's try and see if user has a queue file or similar, but for now just fail gracefully or try sbopkg.
                  cmd = "echo 'rsyslog not in base slackware; install via sbopkg if available' && false"
             
         if cmd:
             try:
                 conn.sudo(cmd, hide=True)
-                
-                # Enable service
                 enable_cmd = self._get_service_enable_cmd("rsyslog")
                 if conn.run("command -v rsyslogd", warn=True, hide=True).ok:
                      conn.sudo(f"{enable_cmd} && {self._get_service_restart_cmd('rsyslog')}", warn=True, hide=True)
-                     
                 return HardeningResult(success=True, command="install_rsyslog", description="Install rsyslog", output="Installed and enabled")
             except Exception as e:
                 return HardeningResult(success=False, command="install_rsyslog", description="Install rsyslog", error=str(e))
@@ -179,7 +293,7 @@ class LoggingSetupModule(HardeningModule):
         return HardeningResult(success=False, command="install_rsyslog", description="Install rsyslog", error=f"No supported package manager found in {pms}")
 
     def _ensure_auditd_installed(self, conn, server_info):
-        """Install auditd if missing"""
+        """Install auditd if missing (Linux only)"""
         if conn.run("command -v auditctl", warn=True, hide=True).ok:
             return HardeningResult(success=True, command="check_auditd", description="Check auditd", output="Already installed")
 
@@ -189,7 +303,6 @@ class LoggingSetupModule(HardeningModule):
         
         if "dnf" in pms or "yum" in pms:
             cmd = "yum install -y audit" 
-            # RHEL/CentOS package is usually just 'audit', not 'auditd'
         elif "apt" in pms:
             cmd = "DEBIAN_FRONTEND=noninteractive apt-get install -y auditd"
         elif "zypper" in pms:
@@ -203,7 +316,6 @@ class LoggingSetupModule(HardeningModule):
         elif "pkg" in pms:
             pass
         elif "slackpkg" in pms or "sbopkg" in pms:
-            # Audit is in SBo for Slackware
             if "sbopkg" in pms:
                 cmd = "sbopkg -B -e -i audit"
             else:
@@ -212,30 +324,42 @@ class LoggingSetupModule(HardeningModule):
         if cmd:
             try:
                 conn.sudo(cmd, hide=True)
-                
-                # Enable service
                 enable_cmd = self._get_service_enable_cmd("auditd")
                 conn.sudo(f"{enable_cmd} && {self._get_service_restart_cmd('auditd')}", warn=True, hide=True)
-
                 return HardeningResult(success=True, command="install_auditd", description="Install auditd", output="Installed and enabled")
             except Exception as e:
                 return HardeningResult(success=False, command="install_auditd", description="Install auditd", error=str(e))
                 
         return HardeningResult(success=False, command="install_auditd", description="Install auditd", error=f"No supported package manager found in {pms}")
 
+    def _ensure_bsd_audit_enabled(self, conn, server_info):
+        """Enable Audit on FreeBSD/HardenedBSD"""
+        # FreeBSD audit is usually base, check for auditd binary
+        if not conn.run("command -v auditd", warn=True, hide=True).ok:
+            return HardeningResult(success=False, command="check_bsd_audit", description="Check BSD Audit", error="auditd binary not found (is this FreeBSD?)")
+
+        try:
+            # Enable in rc.conf
+            conn.sudo("sysrc auditd_enable=YES", hide=True)
+            
+            # Start if not running
+            conn.sudo("service auditd start 2>/dev/null || service auditd onestart 2>/dev/null || true", hide=True)
+            
+            return HardeningResult(success=True, command="enable_bsd_audit", description="Enable BSD Audit", output="Enabled in rc.conf and started")
+        except Exception as e:
+            return HardeningResult(success=False, command="enable_bsd_audit", description="Enable BSD Audit", error=str(e))
+
     def _configure_rsyslog(self) -> List[HardeningCommand]:
         """Configure rsyslog for Linux systems"""
         commands = []
         
-        # Backup original rsyslog configuration
         commands.append(HardeningCommand(
-            command="cp /etc/rsyslog.conf /etc/rsyslog.conf.backup.$(date +%Y%m%d_%H%M%S)",
+            command="test -f /etc/rsyslog.conf && cp /etc/rsyslog.conf /etc/rsyslog.conf.backup.$(date +%Y%m%d_%H%M%S) || echo 'No default rsyslog.conf to backup'",
             description="Backup rsyslog configuration",
-            check_command="test -f /etc/rsyslog.conf && echo exists",
+            check_command="test ! -f /etc/rsyslog.conf -o -f /etc/rsyslog.conf.backup.* 2>/dev/null && echo exists",
             requires_sudo=True
         ))
         
-        # Read config from file
         rsyslog_config = self._read_config_file("rsyslog.conf")
         
         if rsyslog_config:
@@ -246,28 +370,24 @@ class LoggingSetupModule(HardeningModule):
                 requires_sudo=True
             ))
         
-        # Set proper permissions on rsyslog config files
         commands.append(HardeningCommand(
             command="chmod 644 /etc/rsyslog.d/ccdc-security.conf",
             description="Set permissions on rsyslog configuration",
             requires_sudo=True
         ))
         
-        # Create log directories if they don't exist
         commands.append(HardeningCommand(
             command="mkdir -p /var/log && touch /var/log/auth.log /var/log/kern.log /var/log/daemon.log /var/log/ssh.log /var/log/sudo.log",
             description="Create security log files",
             requires_sudo=True
         ))
         
-        # Set proper permissions on log files
         commands.append(HardeningCommand(
             command="chmod 640 /var/log/auth.log /var/log/secure /var/log/ssh.log /var/log/sudo.log 2>/dev/null || true",
             description="Set restrictive permissions on security logs",
             requires_sudo=True
         ))
         
-        # Restart rsyslog to apply configuration
         commands.append(HardeningCommand(
             command=self._get_service_restart_cmd("rsyslog"),
             description="Restart rsyslog service",
@@ -280,7 +400,6 @@ class LoggingSetupModule(HardeningModule):
         """Configure systemd journald"""
         commands = []
         
-        # Create journald configuration directory
         commands.append(HardeningCommand(
             command="mkdir -p /etc/systemd/journald.conf.d",
             description="Create journald configuration directory",
@@ -288,7 +407,6 @@ class LoggingSetupModule(HardeningModule):
             requires_sudo=True
         ))
         
-        # Read config from file
         journald_config = self._read_config_file("journald.conf")
         
         if journald_config:
@@ -299,8 +417,6 @@ class LoggingSetupModule(HardeningModule):
                 requires_sudo=True
             ))
         
-        # Restart journald to apply configuration (IF it is running/present)
-        # We only try to restart journald if systemd is the init system or if it's active
         commands.append(HardeningCommand(
             command=f"systemctl is-active systemd-journald >/dev/null 2>&1 && {self._get_service_restart_cmd('systemd-journald')} || echo 'systemd-journald not active'",
             description="Restart systemd-journald service (if active)",
@@ -310,10 +426,9 @@ class LoggingSetupModule(HardeningModule):
         return commands
     
     def _configure_auditd(self) -> List[HardeningCommand]:
-        """Configure auditd for security auditing"""
+        """Configure auditd for security auditing (Linux)"""
         commands = []
         
-        # Read config
         audit_rules = self._read_config_file("audit.rules")
         
         if audit_rules:
@@ -324,15 +439,12 @@ class LoggingSetupModule(HardeningModule):
                 requires_sudo=True
             ))
         
-        # Load audit rules
         commands.append(HardeningCommand(
-            command="which auditctl >/dev/null && auditctl -R /etc/audit/rules.d/ccdc.rules || echo 'auditctl not available'",
+            command="command -v auditctl >/dev/null && auditctl -R /etc/audit/rules.d/ccdc.rules || echo 'auditctl not available'",
             description="Load audit rules",
             requires_sudo=True
         ))
         
-        # Restart auditd
-        # Fix: don't rely on 'systemctl is-active' which fails on non-systemd distros
         commands.append(HardeningCommand(
             command=f"(pidof auditd >/dev/null || pgrep -x auditd >/dev/null) && {self._get_service_restart_cmd('auditd')} || echo 'auditd not running, skipping restart'",
             description="Restart auditd service",
@@ -340,12 +452,41 @@ class LoggingSetupModule(HardeningModule):
         ))
         
         return commands
+
+    def _configure_bsd_audit(self) -> List[HardeningCommand]:
+        """Configure BSD Audit (audit_control)"""
+        commands = []
+        
+        # Read config (You need to create a bsd_audit_control file in configs dir)
+        audit_control = self._read_config_file("bsd_audit_control")
+        
+        if audit_control:
+            commands.append(HardeningCommand(
+                command="cp /etc/security/audit_control /etc/security/audit_control.backup",
+                description="Backup audit_control",
+                requires_sudo=True
+            ))
+            
+            commands.append(HardeningCommand(
+                command=f'cat > /etc/security/audit_control << "EOF"\n{audit_control}\nEOF',
+                description="Configure BSD audit_control",
+                check_command="grep -q 'CCDC' /etc/security/audit_control && echo exists",
+                requires_sudo=True
+            ))
+            
+            # Reload audit triggers
+            commands.append(HardeningCommand(
+                command="service auditd refresh || service auditd reload",
+                description="Refresh BSD auditd",
+                requires_sudo=True
+            ))
+            
+        return commands
     
     def _configure_logrotate(self) -> List[HardeningCommand]:
         """Configure log rotation"""
         commands = []
         
-        # Read config
         logrotate_config = self._read_config_file("logrotate.conf")
         
         if logrotate_config:
@@ -362,14 +503,23 @@ class LoggingSetupModule(HardeningModule):
         """Configure additional security logging"""
         commands = []
         
-        # Enable process accounting if available
+        # Enable process accounting IF auditd is NOT present/running
+        # logic: if auditctl exists OR auditd is running, skip accton.
+        # This prevents duplicate/conflicting accounting methods.
+        accton_cmd = (
+            "if ! command -v auditctl >/dev/null && ! pgrep -x auditd >/dev/null; then "
+            "  if command -v accton >/dev/null; then "
+            "    accton /var/log/pacct; "
+            "  else echo 'process accounting not available'; fi; "
+            "else echo 'auditd present, skipping accton'; fi"
+        )
+        
         commands.append(HardeningCommand(
-            command="which accton >/dev/null && accton /var/log/pacct || echo 'process accounting not available'",
-            description="Enable process accounting",
+            command=accton_cmd,
+            description="Enable process accounting (if auditd is missing)",
             requires_sudo=True
         ))
         
-        # Configure bash history logging
         commands.append(HardeningCommand(
             command='echo "export HISTTIMEFORMAT=\'%F %T \'" >> /etc/bash.bashrc',
             description="Enable bash history timestamps",
@@ -390,7 +540,6 @@ class LoggingSetupModule(HardeningModule):
         """Configure BSD syslogd"""
         commands = []
         
-        # Backup original syslog configuration
         commands.append(HardeningCommand(
             command="cp /etc/syslog.conf /etc/syslog.conf.backup.$(date +%Y%m%d_%H%M%S)",
             description="Backup BSD syslog configuration",
@@ -398,7 +547,6 @@ class LoggingSetupModule(HardeningModule):
             requires_sudo=True
         ))
         
-        # Read config
         bsd_syslog_config = self._read_config_file("bsd_syslog.conf")
         
         if bsd_syslog_config:
@@ -409,21 +557,18 @@ class LoggingSetupModule(HardeningModule):
                 requires_sudo=True
             ))
         
-        # Create log files
         commands.append(HardeningCommand(
             command="touch /var/log/auth.log /var/log/authpriv /var/log/daemon.log /var/log/kern.log /var/log/ssh.log",
             description="Create BSD log files",
             requires_sudo=True
         ))
         
-        # Set permissions on log files
         commands.append(HardeningCommand(
             command="chmod 640 /var/log/auth.log /var/log/authpriv /var/log/security /var/log/ssh.log",
             description="Set restrictive permissions on security logs",
             requires_sudo=True
         ))
         
-        # Restart syslogd
         commands.append(HardeningCommand(
             command=self._get_service_restart_cmd("syslogd"),
             description="Restart BSD syslogd service",
@@ -436,7 +581,6 @@ class LoggingSetupModule(HardeningModule):
         """Configure BSD newsyslog (log rotation)"""
         commands = []
         
-        # Read config
         newsyslog_entries = self._read_config_file("bsd_newsyslog.conf")
         
         if newsyslog_entries:
@@ -453,14 +597,20 @@ class LoggingSetupModule(HardeningModule):
         """Configure additional BSD security logging"""
         commands = []
         
-        # Enable process accounting on BSD
+        # Enable process accounting on BSD IF Audit is NOT enabled
+        # We check if auditd is running/enabled using 'service auditd status'
+        accton_cmd = (
+            "if ! service auditd status >/dev/null 2>&1; then "
+            "  accton /var/account/acct 2>/dev/null || echo 'process accounting not configured'; "
+            "else echo 'BSD Audit present, skipping accton'; fi"
+        )
+        
         commands.append(HardeningCommand(
-            command="accton /var/account/acct 2>/dev/null || echo 'process accounting not configured'",
-            description="Enable BSD process accounting",
+            command=accton_cmd,
+            description="Enable BSD process accounting (if auditd is missing)",
             requires_sudo=True
         ))
         
-        # Configure shell history for BSD
         commands.append(HardeningCommand(
             command='echo "set history = 10000" >> /etc/csh.cshrc',
             description="Increase csh history size",
@@ -474,7 +624,6 @@ class LoggingSetupModule(HardeningModule):
         """This module is applicable to Linux and BSD systems"""
         try:
             os_family = OSFamily(self.os_family)
-            # Applicable to everything except maybe Windows (which isn't in OSFamily yet)
             return True
         except ValueError:
             return True
@@ -493,7 +642,6 @@ class LoggingSetupModule(HardeningModule):
         
         commands = self.get_commands()
         
-        # Write all commands to a timestamped file for reference
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_file = Path(f"/tmp/ccdc_logging_commands_{self.server_info.hostname}_{timestamp}.txt")
         try:

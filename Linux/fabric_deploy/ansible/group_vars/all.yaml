@@ -1,0 +1,19 @@
+# Auto-generated from users.json
+# Last synced: 2026-01-06T17:39:37.779154
+---
+ccdc_do_not_change_users:
+  black-team-acc: do not change password
+  root: don't mess with root while testing
+  scan-agent: added by the hardenig script
+ccdc_regular_users:
+  alex: preset_password_here_neet1337
+  blair: xxxxx
+  casey: )Vk,f.mUnXh?DDnH
+  devon: oz*M^PetT!*HtVrL
+  jordan: (_Vl-VgcJ_sBujUQ
+  morgan: +N,uuu=H%hIuzLHX
+  quinn: gh-{GVij*yLOe%QJ
+  riley: __PER_HOST__
+ccdc_super_users:
+  sam: t$ovOcd]*JC{QwNO
+  taylor: LKYm*ZwbQf))$nfJ

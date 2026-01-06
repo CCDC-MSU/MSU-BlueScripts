@@ -1,0 +1,20 @@
+---
+# Handlers for logging_setup role
+
+- name: restart rsyslog
+  service:
+    name: rsyslog
+    state: restarted
+  failed_when: false
+
+- name: restart auditd
+  service:
+    name: auditd
+    state: restarted
+  failed_when: false
+
+- name: restart journald
+  service:
+    name: systemd-journald
+    state: restarted
+  failed_when: false
