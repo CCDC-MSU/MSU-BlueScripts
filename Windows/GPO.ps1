@@ -25,7 +25,7 @@ if (-not $existingGpo) {
 
 # Link the GPO to the domain
 Write-Host "Linking GPO '$targetName' to domain root..." -ForegroundColor Cyan
-New-GPLink -Name $targetName -Target "LDAP://$domainDn" -LinkEnabled Yes
+New-GPLink -Name $targetName -Target $domainDn -LinkEnabled Yes
 
 # OPTIONAL: Enforce the GPO link
 #$gplink = Get-GPLink -Target "LDAP://$domainDn" | Where-Object { $_.GPOName -eq $targetName }
