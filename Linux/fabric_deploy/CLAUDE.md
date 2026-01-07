@@ -60,30 +60,6 @@ ansible/                # Ansible integration (NEW)
     logging_setup/      # Role for logging setup
 ```
 
-## Hybrid Ansible/Fabric Integration
-
-**Introduced:** 2026-01-05 to solve cross-distro package management challenges
-
-The system uses a **hybrid approach** for certain operations:
-- **Ansible** handles cross-distro package installation (currently: logging packages)
-- **Fabric** handles everything else (discovery, configuration, service management)
-
-**Key Benefits:**
-- Ansible abstracts package name differences (e.g., "auditd" vs "audit")
-- Fabric retains direct SSH control for complex logic
-- Auto-generated inventory from `hosts.txt` - always in sync
-- Zero dependencies on target hosts (Ansible runs from control node)
-
-**Current Integration:**
-- `logging_setup` module uses Ansible for package installation only
-- Pattern is reusable for other modules if needed
-
-**Requirements:**
-- Ansible 2.14+ must be installed on control node
-- Run `ansible --version` to verify
-
-See `docs/ANSIBLE_INTEGRATION.md` for complete documentation.
-
 ## Configuration Files
 
 - **hosts.txt**: Target inventory - `IP:User:Password[:Port][:FriendlyName]`
@@ -116,3 +92,9 @@ Supports 13 OS families via `OSFamily` enum in `utilities/discovery.py`:
 - **Reports**: `reports/<host>/<timestamp>.md`
 - **Logs**: `logs/harden/<host>/<timestamp>.log`
 - **Passwords**: `logs/user-hardening/<host>/passwords_<timestamp>.txt`
+
+## Debugging
+
+Run commands on the remote hosts directly to get more information while debugging. The hosts are defined in `Linux/fabric_deploy/hosts.txt` use the key defined in `Linux/fabric_deploy/keys/test-root-key.private` to authenticate.
+
+Remember you have full root access on this sandbox.
