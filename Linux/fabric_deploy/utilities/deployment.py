@@ -22,6 +22,7 @@ from .modules import (
     ShellScriptHardeningModule,
     UserHardeningModule,
 )
+from .reporting import ReportGenerator
 from dataclasses import dataclass, field
 import time
 
@@ -429,126 +430,6 @@ class HardeningOrchestrator:
         }
 
     def _generate_report(self, host_label: str, results: Dict, summary: str) -> str:
-        """Generate markdown report for the host"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        report_dir = Path("logs/reports")
-        report_dir.mkdir(parents=True, exist_ok=True)
-        report_path = report_dir / f"REPORT_{host_label}_{timestamp}.md"
-
-        try:
-            with open(report_path, 'w') as f:
-                f.write(f"# Hardening Report: {host_label}\n")
-                f.write(f"**Date**: {datetime.now().isoformat()}\n")
-                f.write(f"**Host**: {self.server_info.hostname} ({self.os_family})\n\n")
-
-                # === System Information ===
-                f.write("## System Information\n")
-                os_info = self.server_info.os
-                f.write(f"| Property | Value |\n")
-                f.write(f"|----------|-------|\n")
-                f.write(f"| **OS** | {os_info.distro} {os_info.version} |\n")
-                f.write(f"| **Kernel** | {os_info.kernel} |\n")
-                f.write(f"| **Architecture** | {os_info.architecture} |\n")
-                f.write(f"| **Init System** | {self.server_info.init_system} |\n")
-                pkg_mgrs = ', '.join(self.server_info.package_managers) if self.server_info.package_managers else 'None detected'
-                f.write(f"| **Package Managers** | {pkg_mgrs} |\n")
-                f.write(f"| **Default Shell** | {self.server_info.default_shell} |\n")
-                f.write(f"| **Sudo Group** | {self.server_info.sudo_group} |\n")
-                f.write("\n")
-
-                # === Failures Summary ===
-                all_failures = []
-                for module_name, module_results in results.items():
-                    for r in module_results:
-                        if not r.success:
-                            all_failures.append((module_name, r.description, r.error or 'Unknown error'))
-                
-                if all_failures:
-                    f.write("## ⚠️ Failures Summary\n")
-                    f.write(f"**Total Failures**: {len(all_failures)}\n\n")
-                    f.write("The following items failed and may need **manual intervention**:\n\n")
-                    for module_name, desc, error in all_failures:
-                        # Truncate long errors for readability
-                        error_short = error[:200] + '...' if len(error) > 200 else error
-                        f.write(f"- [ ] **{module_name}**: {desc}\n")
-                        f.write(f"  - Error: `{error_short}`\n")
-                    f.write("\n")
-                else:
-                    f.write("## ✅ No Failures\n")
-                    f.write("All hardening steps completed successfully.\n\n")
-
-                # === Execution Summary ===
-                f.write("## Execution Summary\n")
-                f.write("```\n")
-                f.write(summary)
-                f.write("\n```\n\n")
-
-                # === User Management Changes ===
-                f.write("## User Management Changes\n")
-                user_res = results.get('user_hardening', [])
-                pwd_log = next((r.output for r in user_res if r.command.startswith('write_password_log')), None)
-                if pwd_log and os.path.exists(pwd_log):
-                    f.write(f"**Password Log**: `{pwd_log}`\n\n")
-                    try:
-                        f.write("### Password Log Content\n")
-                        f.write("```\n")
-                        f.write(Path(pwd_log).read_text())
-                        f.write("\n```\n")
-                    except:
-                        f.write("*(Could not read password log)*\n")
-                else:
-                    f.write("*No password changes recorded or log not found.*\n")
-                f.write("\n")
-
-                # === Sudoers Configuration ===
-                f.write("## Sudoers Configuration\n")
-                sudoers_dump = getattr(self.server_info, 'sudoers_dump', None)
-                if sudoers_dump:
-                    f.write("### /etc/sudoers Dump\n")
-                    f.write("```\n")
-                    f.write(sudoers_dump)
-                    f.write("\n```\n")
-                else:
-                    f.write("*Sudoers dump not available.*\n")
-                f.write("\n")
-
-                # === Network Information ===
-                f.write("## Network Information\n")
-                open_ports = self.server_info.network.open_ports
-                ports_str = ', '.join(open_ports) if open_ports else 'None detected'
-                f.write(f"- **Open Ports**: {ports_str}\n")
-                route = self.server_info.network.default_route.strip() if self.server_info.network.default_route else 'Not available'
-                f.write(f"- **Default Route**: {route}\n")
-                f.write("\n")
-
-                # === Security Tools ===
-                f.write("## Security Tools\n")
-                installed = [name for name, present in self.server_info.security_tools.items() if present]
-                missing = [name for name, present in self.server_info.security_tools.items() if not present]
-                f.write(f"- **Installed**: {', '.join(sorted(installed)) if installed else 'None'}\n")
-                if missing:
-                    f.write(f"- **Missing** (may need manual install): {', '.join(sorted(missing))}\n")
-                f.write("\n")
-
-                # === Running Services ===
-                f.write("## Running Services\n")
-                services = self.server_info.services
-                if services:
-                    f.write(f"*{len(services)} services detected*\n\n")
-                    # Show as compact list
-                    for svc in sorted(services)[:30]:
-                        f.write(f"- {svc}\n")
-                    if len(services) > 30:
-                        f.write(f"- *...and {len(services) - 30} more*\n")
-                else:
-                    f.write("*No services detected*\n")
-                f.write("\n")
-
-                f.write("---\nGenerated by CCDC Fabric Deploy\n")
-
-            logger.info(f"Report generated: {report_path}")
-            return str(report_path)
-
-        except Exception as e:
-            logger.error(f"Failed to generate report: {e}")
-            return ""
+        """Generate markdown report for the host using ReportGenerator"""
+        report_gen = ReportGenerator(self.server_info, self.os_family, self.modules_map)
+        return report_gen.generate_report(host_label, results, summary)
