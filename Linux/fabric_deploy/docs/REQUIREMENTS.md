@@ -121,7 +121,7 @@ ssh -V
 
 - [ ] **6. Test a single module** (dry run)
   ```bash
-  uv run fab test-module --module=logging_setup
+  uv run fab test-module --module=logging_hardening
   ```
 
 ### ⏰ T-0 (Competition Starts)
@@ -386,7 +386,7 @@ tail -f logs/harden/*/*.log
 
 - **Main Documentation**: `docs/workflow_guide.md`
 - **Ansible Integration**: `docs/ANSIBLE_INTEGRATION.md`
-- **Logging Module**: `docs/README_logging_setup.md`
+- **Logging Module**: `docs/README_logging_hardening.md`
 - **Ansible Docs**: https://docs.ansible.com/
 - **Fabric Docs**: https://www.fabfile.org/
 - **uv Docs**: https://github.com/astral-sh/uv

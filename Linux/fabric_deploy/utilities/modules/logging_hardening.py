@@ -19,11 +19,11 @@ logger = logging.getLogger(__name__)
 # Path to ansible directory (relative to this file)
 ANSIBLE_DIR = Path(__file__).parent.parent.parent / "ansible"
 
-class LoggingSetupModule(HardeningModule):
+class LoggingHardeningModule(HardeningModule):
     """Configure comprehensive logging for CCDC scenarios"""
     
     def get_name(self) -> str:
-        return "logging_setup"
+        return "logging_hardening"
     
     def _read_config_file(self, filename: str) -> str:
         """Read configuration file from configs directory"""
@@ -137,11 +137,15 @@ class LoggingSetupModule(HardeningModule):
         env['ANSIBLE_CONFIG'] = str(ANSIBLE_DIR / 'ansible.cfg')
         env['ANSIBLE_HOST_KEY_CHECKING'] = 'False'
 
+        # Use the known root SSH key for ansible
+        ssh_key_path = str(Path(__file__).parent.parent.parent / "keys" / "test-root-key.private")
+
         result = subprocess.run(
             [
                 'ansible-playbook',
                 'playbooks/install_logging_packages.yaml',
                 '--limit', limit_target,
+                '--private-key', ssh_key_path,
                 '-v'
             ],
             cwd=str(ANSIBLE_DIR),
@@ -635,9 +639,10 @@ class LoggingSetupModule(HardeningModule):
         from datetime import datetime
         
         logger = logging.getLogger(__name__)
+        module_name = self.get_name()
         
         if not self.is_applicable():
-            logger.info(f"Module {self.get_name()} is not applicable to this system")
+            logger.info(f"Module {module_name} is not applicable to this system")
             return []
         
         commands = self.get_commands()
@@ -657,15 +662,15 @@ class LoggingSetupModule(HardeningModule):
                          f.write(f"Check command: {cmd.check_command or 'None'}\n")
                     f.write(f"Requires sudo: {cmd.requires_sudo}\n")
                     f.write("-" * 40 + "\n\n")
-            logger.info(f"Commands written to: {log_file}")
+            logger.info(f"[{module_name}] Commands written to: {log_file}")
         except Exception as e:
-            logger.warning(f"Failed to write log file: {e}")
+            logger.warning(f"[{module_name}] Failed to write log file: {e}")
         
-        logger.info(f"Executing {len(commands)} logging configuration commands...")
+        logger.info(f"[{module_name}] Executing {len(commands)} commands...")
         
         for i, cmd in enumerate(commands, 1):
             if dry_run:
-                logger.info(f"[{i}/{len(commands)}] DRY RUN: {cmd.description}")
+                logger.info(f"[{module_name}] [{i}/{len(commands)}] [DRY RUN] {cmd.description}")
                 self.results.append(HardeningResult(
                     success=True,
                     command=cmd.command if not isinstance(cmd, PythonAction) else cmd.function.__name__,
@@ -674,17 +679,17 @@ class LoggingSetupModule(HardeningModule):
                     already_applied=False
                 ))
             else:
-                logger.info(f"[{i}/{len(commands)}] {cmd.description}")
-                result = self.apply_command(cmd)
+                result = self.apply_action(cmd)
                 self.results.append(result)
                 
                 if result.success:
                     if result.already_applied:
-                        logger.info(f"  ✓ Already applied")
+                        logger.info(f"[{module_name}] [{i}/{len(commands)}] {cmd.description} → ✓ (already applied)")
                     else:
-                        logger.info(f"  ✓ Success")
+                        logger.info(f"[{module_name}] [{i}/{len(commands)}] {cmd.description} → ✓")
                 else:
-                    logger.error(f"  ✗ Failed: {result.error}")
+                    error_msg = result.error or "Unknown error"
+                    logger.error(f"[{module_name}] [{i}/{len(commands)}] {cmd.description} → ✗ {error_msg}")
         
-        logger.info(f"Logging setup completed. Details in: {log_file}")
+        logger.info(f"[{module_name}] Completed. Details in: {log_file}")
         return self.results

@@ -79,7 +79,7 @@ To run a specific module (e.g., to fix SSH without running the full pipeline):
 ```bash
 fab test-module --module=ssh_hardening --live
 ```
-*(Available modules: user_hardening, ssh_hardening, firewall_hardening, package_installer, logging_setup)*
+*(Available modules: user_hardening, ssh_hardening, firewall_hardening, package_installer, logging_hardening)*
 
 **Run Custom Scripts**
 Run a local script on all remote hosts:

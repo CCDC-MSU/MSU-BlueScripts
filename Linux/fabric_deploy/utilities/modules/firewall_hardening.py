@@ -11,8 +11,12 @@ from fabric import Connection, Config
 from invoke.exceptions import CommandTimedOut, UnexpectedExit
 from .base import HardeningModule, HardeningCommand, PythonAction, HardeningResult
 from ..discovery import OSFamily
+import os
 
 logger = logging.getLogger(__name__)
+
+# Path to root key for connectivity testing
+ROOT_KEY_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../keys/test-root-key.private"))
 
 # Hardcoded from lockdown.sh
 TRUSTED_IPS = [
@@ -372,6 +376,19 @@ class FirewallHardeningModule(HardeningModule):
         # 1. Ensure Conntrack is present (for flushing state later)
         has_conntrack = self._ensure_conntrack_installed(conn)
         
+        # Check if firewalld uses nftables backend (modern distros)
+        # Direct rules (ipv4 filter) only work with iptables backend
+        # Method 1: Try the CLI option (newer versions of firewalld)
+        backend_result = conn.run("firewall-cmd --get-default-backend 2>/dev/null", warn=True, hide=True)
+        uses_nftables = backend_result.ok and "nftables" in backend_result.stdout.lower()
+        
+        # Method 2: Check config file if CLI didn't return a backend
+        if not uses_nftables and not backend_result.stdout.strip():
+            config_result = conn.run("grep -i 'FirewallBackend.*nftables' /etc/firewalld/firewalld.conf 2>/dev/null", warn=True, hide=True)
+            uses_nftables = config_result.ok and "nftables" in config_result.stdout.lower()
+        
+        logger.info(f"Firewalld backend detection: uses_nftables={uses_nftables}")
+        
         try:
             # 2. Reload to clear old runtime junk
             conn.sudo("firewall-cmd --reload", hide=True, timeout=30)
@@ -390,25 +407,38 @@ class FirewallHardeningModule(HardeningModule):
             # 4. Set Default Zone to Drop
             conn.sudo("firewall-cmd --set-default-zone=drop", hide=True, timeout=10)
             
-            # 5. Allow Internet Mode (root only) - uses direct rules with owner matching
+            # 5. Allow Internet Mode (root only)
             if self.mode == MODE_ALLOW_INTERNET:
-                logger.info("Adding allow_internet rules (root only) via firewalld direct rules...")
-                for port, protocols in INTERNET_PORTS.items():
-                    for proto in protocols:
-                        # Outbound: Allow root user to initiate connections
-                        conn.sudo(
-                            f"firewall-cmd --direct --add-rule ipv4 filter OUTPUT 1 "
-                            f"-p {proto} --dport {port} -m owner --uid-owner 0 "
-                            f"-m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT",
-                            hide=True, timeout=30
-                        )
-                        # Inbound: Allow established/related responses
-                        conn.sudo(
-                            f"firewall-cmd --direct --add-rule ipv4 filter INPUT 1 "
-                            f"-p {proto} --sport {port} "
-                            f"-m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",
-                            hide=True, timeout=30
-                        )
+                if uses_nftables:
+                    # Use rich rules for nftables backend (no user matching available)
+                    logger.info("Adding allow_internet rules via firewalld rich rules (nftables backend)...")
+                    for port, protocols in INTERNET_PORTS.items():
+                        for proto in protocols:
+                            # Allow outbound to specific ports
+                            conn.sudo(
+                                f"firewall-cmd --zone=drop --add-rich-rule='"
+                                f"rule family=ipv4 port port={port} protocol={proto} accept'",
+                                hide=True, warn=True, timeout=30
+                            )
+                else:
+                    # Use direct rules (iptables backend) with owner matching
+                    logger.info("Adding allow_internet rules (root only) via firewalld direct rules...")
+                    for port, protocols in INTERNET_PORTS.items():
+                        for proto in protocols:
+                            # Outbound: Allow root user to initiate connections
+                            conn.sudo(
+                                f"firewall-cmd --direct --add-rule ipv4 filter OUTPUT 1 "
+                                f"-p {proto} --dport {port} -m owner --uid-owner 0 "
+                                f"-m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT",
+                                hide=True, timeout=30
+                            )
+                            # Inbound: Allow established/related responses
+                            conn.sudo(
+                                f"firewall-cmd --direct --add-rule ipv4 filter INPUT 1 "
+                                f"-p {proto} --sport {port} "
+                                f"-m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",
+                                hide=True, timeout=30
+                            )
             
             # 6. FLUSH EXISTING CONNECTIONS (Critical Fix)
             # firewalld preserves state by default. We must flush it to kill 'evil' connections.
@@ -476,12 +506,23 @@ class FirewallHardeningModule(HardeningModule):
         full_cmd = " && ".join(cmds)
         try:
             conn.sudo(full_cmd, hide=True, timeout=10)
+            
+            # Persistence Logic for iptables
+            # Debian/Ubuntu: /etc/iptables/rules.v4
+            # RHEL/CentOS: /etc/sysconfig/iptables
+            if conn.run("test -d /etc/iptables", warn=True, hide=True).ok:
+                conn.sudo("iptables-save > /etc/iptables/rules.v4", hide=True)
+                logger.info("Saved iptables rules to /etc/iptables/rules.v4")
+            elif conn.run("test -d /etc/sysconfig", warn=True, hide=True).ok:
+                conn.sudo("iptables-save > /etc/sysconfig/iptables", hide=True)
+                logger.info("Saved iptables rules to /etc/sysconfig/iptables")
+                
         except CommandTimedOut:
              logger.warning("IPTables command timed out (likely connection severed).")
              return HardeningResult(success=True, command="apply_iptables", description="Applied iptables rules", output="Command timed out (Session severed)")
         
         mode_info = f" (mode: {self.mode})"
-        return HardeningResult(success=True, command="apply_iptables", description="Applied iptables rules", output=f"Rules applied{mode_info}")
+        return HardeningResult(success=True, command="apply_iptables", description="Applied iptables rules", output=f"Rules applied and saved{mode_info}")
 
     def _apply_nft(self, conn):
         # Build nftables config file content
@@ -520,8 +561,18 @@ class FirewallHardeningModule(HardeningModule):
         full_config = "\\n".join(config_lines)
         
         try:
-            # Write config to file
+            # Determine persistent config path based on loaded package manager/OS family
+            # Alpine uses /etc/nftables.nft, Debian/RedHat use /etc/nftables.conf
+            persistent_conf = "/etc/nftables.conf"
+            if "alpine" in self.server_info.os.distro.lower():
+                persistent_conf = "/etc/nftables.nft"
+            
+            # Write config to temp file first
             conn.sudo(f"printf '{full_config}' > {nft_conf}", hide=True)
+            
+            # Write to persistent location
+            conn.sudo(f"printf '{full_config}' > {persistent_conf}", hide=True)
+            logger.info(f"Saved nftables rules to {persistent_conf}")
             
             # Apply config
             conn.sudo(f"nft -f {nft_conf}", hide=True, timeout=10)
@@ -573,6 +624,10 @@ class FirewallHardeningModule(HardeningModule):
         try:
             # Write config
             conn.sudo(f"printf '%s' '{conf_content}' > {pf_conf}", hide=True)
+            # Write to persistent config (Standard BSD location)
+            conn.sudo(f"printf '%s' '{conf_content}' > /etc/pf.conf", hide=True)
+            logger.info("Saved PF rules to /etc/pf.conf")
+            
             # Apply
             conn.sudo(f"pfctl -f {pf_conf}", hide=True, timeout=10)
             conn.sudo("pfctl -e", warn=True, hide=True, timeout=10)
@@ -584,7 +639,7 @@ class FirewallHardeningModule(HardeningModule):
             return HardeningResult(success=False, command="apply_pf", description="Applied PF rules", error=str(e))
 
         mode_info = f" (mode: {self.mode})"
-        return HardeningResult(success=True, command="apply_pf", description="Applied PF rules", output=f"PF rules loaded{mode_info}")
+        return HardeningResult(success=True, command="apply_pf", description="Applied PF rules", output=f"PF rules loaded and saved{mode_info}")
 
     def _apply_ipfw(self, conn):
         try:
@@ -623,45 +678,67 @@ class FirewallHardeningModule(HardeningModule):
         return HardeningResult(success=True, command="apply_ipfw", description="Applied IPFW rules", output=f"IPFW rules applied{mode_info}")
 
     def _test_connectivity(self, conn, server_info):
-        """Verify we are not locked out; disarm DMS on success"""
-        # Standard Fabric connectivity test (implicit in run/sudo, but we do verification action explicitly)
-        # Connection params:
+        """Verify we are not locked out; disarm DMS on success. Retries with key-only auth for root."""
         host = server_info.credentials.host
         user = server_info.credentials.user
         password = getattr(server_info.credentials, 'password', None)
         port = getattr(server_info.credentials, 'port', 22)
         key_file = getattr(server_info.credentials, 'key_file', None)
         
-        # Prepare connectivity test
-        connect_kwargs = {'allow_agent': False, 'look_for_keys': False, 'timeout': 10}
-        if key_file:
-            connect_kwargs['key_filename'] = key_file
-        if password:
-            connect_kwargs['password'] = password
+        # Prepare connectivity test with KEY-ONLY auth for root (password auth may be disabled)
+        connect_kwargs = {'allow_agent': False, 'look_for_keys': False, 'timeout': 15}
+        
+        # For root user, prioritize the designated root key
+        if user == 'root' and os.path.exists(ROOT_KEY_PATH):
+            logger.info(f"Using root recovery key for connectivity test: {ROOT_KEY_PATH}")
+            key_list = [ROOT_KEY_PATH]
+            if key_file:
+                if isinstance(key_file, list):
+                    key_list.extend(key_file)
+                else:
+                    key_list.append(key_file)
+            connect_kwargs['key_filename'] = key_list
+            # Don't use password for root - key auth only after hardening
+        else:
+            if key_file:
+                connect_kwargs['key_filename'] = key_file
+            if password:
+                connect_kwargs['password'] = password
         
         config = Config(overrides={'sudo': {'password': password}, 'load_ssh_configs': False})
         
-        logger.info(f"Verifying connectivity to {host}...")
-        time.sleep(5) # Allow network stack to settle after flush
-        try:
-            # We must use a NEW connection to verify
-            with Connection(host, user=user, port=port, config=config, connect_kwargs=connect_kwargs) as test_conn:
-                test_conn.run("echo 'Connectivity Check'", hide=True, timeout=10)
-            
-            # If success, kill DMS
-            if self.dead_mans_switch_pid:
-                conn.sudo(f"kill {self.dead_mans_switch_pid} || true", hide=True, warn=True)
-                logger.info(f"DMS Disarmed (PID {self.dead_mans_switch_pid})")
-                return HardeningResult(success=True, command="verify_connectivity", description="Connectivity Verified", output="DMS Disarmed")
-                
-        except Exception as e:
-            logger.error(f"Connectivity check failed: {e}")
-            return HardeningResult(
-                success=False, 
-                command="verify_connectivity", 
-                description="Connectivity Check", 
-                error="Failed to connect. DMS should revert changes in ~60s.",
-                output="LOCKED OUT?"
-            )
+        # Retry with increasing delays (network stack needs to settle after rule changes)
+        max_retries = 3
+        delays = [3, 5, 8]  # Seconds to wait before each attempt
+        last_error = None
         
-        return HardeningResult(success=True, command="verify_connectivity", description="Connectivity Verified", output="Success")
+        for attempt in range(max_retries):
+            delay = delays[attempt] if attempt < len(delays) else 5
+            logger.info(f"Verifying connectivity to {host} (attempt {attempt + 1}/{max_retries}, waiting {delay}s)...")
+            time.sleep(delay)
+            
+            try:
+                with Connection(host, user=user, port=port, config=config, connect_kwargs=connect_kwargs) as test_conn:
+                    test_conn.run("echo 'Connectivity Check OK'", hide=True, timeout=10)
+                
+                # If success, kill DMS
+                if self.dead_mans_switch_pid:
+                    conn.sudo(f"kill {self.dead_mans_switch_pid} || true", hide=True, warn=True)
+                    logger.info(f"DMS Disarmed (PID {self.dead_mans_switch_pid})")
+                    return HardeningResult(success=True, command="verify_connectivity", description="Connectivity Verified", output=f"DMS Disarmed (attempt {attempt + 1})")
+                
+                return HardeningResult(success=True, command="verify_connectivity", description="Connectivity Verified", output=f"Success (attempt {attempt + 1})")
+                    
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(f"Connectivity check attempt {attempt + 1} failed: {e}")
+        
+        # All retries exhausted
+        logger.error(f"Connectivity check failed after {max_retries} attempts: {last_error}")
+        return HardeningResult(
+            success=False, 
+            command="verify_connectivity", 
+            description="Connectivity Check", 
+            error="Failed to connect. DMS should revert changes in ~60s.",
+            output=f"Failed after {max_retries} attempts: {last_error}"
+        )
