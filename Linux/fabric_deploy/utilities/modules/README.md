@@ -57,10 +57,10 @@ All modules inherit from `HardeningModule` (in `base.py`) and must implement:
 *   Hardcodes a specific password for this agent.
 *   Useful for maintaining access if other accounts are compromised or locked out.
 
-### `bash_scripts.py`
+### `shell_scripts.py`
 **Purpose**: Bridge for legacy or complex shell scripts.
 **Key Features**:
-*   Allows the orchestrator to deploy and run raw bash scripts (from `scripts/`) as if they were a module.
+*   Allows the orchestrator to deploy and run raw shell scripts (sh/POSIX compatible from `scripts/`) as if they were a module.
 *   Handles script upload, execution, and output logging.
 
 ## Base Classes (`base.py`)

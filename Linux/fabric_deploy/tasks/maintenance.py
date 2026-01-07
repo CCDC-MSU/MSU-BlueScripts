@@ -2,6 +2,7 @@ from fabric import task, Connection, Config
 import logging
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import paramiko
 
 from utilities.utils import parse_hosts_file, is_connection_reset
 from .common import (
@@ -52,10 +53,12 @@ def reset_ssh(c, hosts_file='hosts.txt', restart=True):
                     connect_kwargs['port'] = server_creds.port
                 
                 fabric_config = Config(overrides=config_overrides)
-                
+
                 with Connection(server_creds.host, user=server_creds.user,
                                config=fabric_config, connect_kwargs=connect_kwargs) as conn:
-                    
+                    # Ignore host key changes - critical for fault tolerance
+                    conn.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
                     # 1. Find latest backup
                     logger.info("Looking for latest sshd_config backup...")
                     # listing files, sorting by time (newest first), picking first

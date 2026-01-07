@@ -19,7 +19,7 @@ from .modules import (
     FirewallHardeningModule,
     MODE_STRICT,
     MODE_ALLOW_INTERNET,
-    BashScriptHardeningModule,
+    ShellScriptHardeningModule,
     UserHardeningModule,
 )
 from dataclasses import dataclass, field
@@ -53,7 +53,7 @@ DEFAULT_PIPELINE = [
     PipelineStep('module', 'ssh_hardening'),
 
     # 7. Run any additional custom scripts
-    PipelineStep('module', 'bash_scripts'),
+    PipelineStep('module', 'shell_scripts'),
 
     # 8. Reboot (Clean slate)
     PipelineStep('action', 'reboot'),
@@ -110,7 +110,7 @@ class HardeningOrchestrator:
             # Strict mode firewall (default)
             FirewallHardeningModule(self.conn, self.server_info, self.os_family, mode=MODE_STRICT),
             UserHardeningModule(self.conn, self.server_info, self.os_family),
-            BashScriptHardeningModule(self.conn, self.server_info, self.os_family, 
+            ShellScriptHardeningModule(self.conn, self.server_info, self.os_family,
                                     script_paths=self.script_paths),
         ]
         modules_map = {m.get_name(): m for m in modules}

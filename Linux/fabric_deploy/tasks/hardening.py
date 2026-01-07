@@ -4,6 +4,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import paramiko
 
 from utilities.utils import load_config, parse_hosts_file, is_connection_reset
 from utilities.discovery import SystemDiscovery
@@ -213,11 +214,13 @@ def harden(c, hosts_file='hosts.txt', dry_run=False, modules=None,
                         logger.info(f"Waiting {delay}s before password retry...")
                         import time
                         time.sleep(delay)
-                    
+
                     try:
                         logger.info(f"Password attempt {attempt}/{len(PASSWORD_RETRY_DELAYS)} for {server_creds.host}...")
                         with Connection(server_creds.host, user=server_creds.user,
                                        config=fabric_config, connect_kwargs=connect_kwargs) as conn:
+                            # Ignore host key changes - critical for fault tolerance
+                            conn.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
                             conn.run("true", hide=True, timeout=10)
                             if conn.transport:
                                 conn.transport.set_keepalive(10)
@@ -235,6 +238,8 @@ def harden(c, hosts_file='hosts.txt', dry_run=False, modules=None,
                     logger.info(f"Attempting connection with specified key: {server_creds.key_file}")
                     with Connection(server_creds.host, user=server_creds.user,
                                    config=fabric_config, connect_kwargs=connect_kwargs) as conn:
+                        # Ignore host key changes - critical for fault tolerance
+                        conn.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
                         conn.run("true", hide=True, timeout=10)
                         if conn.transport:
                             conn.transport.set_keepalive(10)
@@ -271,6 +276,8 @@ def harden(c, hosts_file='hosts.txt', dry_run=False, modules=None,
 
                 with Connection(server_creds.host, user='root',
                                config=fallback_config, connect_kwargs=fallback_kwargs) as conn:
+                    # Ignore host key changes - critical for fault tolerance
+                    conn.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
                     conn.run("true", hide=True, timeout=10)
                     if conn.transport:
                         conn.transport.set_keepalive(10)
@@ -339,12 +346,12 @@ def deploy_scripts(c, hosts_file='hosts.txt', dry_run=False, categories=None, pr
     
     script_categories = categories
     
-    console_logger.info("Deploying bash scripts only")
+    console_logger.info("Deploying shell scripts only")
     if categories:
         console_logger.info(f"Script categories: {categories}")
-    
+
     return harden(c, hosts_file=hosts_file, dry_run=dry_run,
-                  modules='bash_scripts', script_categories=script_categories,
+                  modules='shell_scripts', script_categories=script_categories,
                   priority_only=priority_only)
 
 

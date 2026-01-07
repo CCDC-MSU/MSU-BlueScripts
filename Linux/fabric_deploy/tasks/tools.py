@@ -7,6 +7,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import tarfile
 from io import BytesIO
+import paramiko
 
 from utilities.utils import load_config, parse_hosts_file, is_connection_reset
 from .common import (
@@ -83,9 +84,11 @@ def upload_tools(c, hosts_file='hosts.txt'):
                     connect_kwargs['port'] = server_creds.port
                 
                 fabric_config = Config(overrides=config_overrides)
-                
+
                 with Connection(server_creds.host, user=server_creds.user,
                                config=fabric_config, connect_kwargs=connect_kwargs) as conn:
+                    # Ignore host key changes - critical for fault tolerance
+                    conn.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
                     _upload_tools_internal(conn)
                     return {'host': server_creds.host, 'status': 'ok'}
              except Exception as e:
@@ -217,6 +220,8 @@ def run_script(c, file, hosts_file='hosts.txt', sudo=True, timeout=300, output_d
 
             with Connection(server_creds.host, user=server_creds.user,
                             config=config, connect_kwargs=connect_kwargs) as conn:
+                # Ignore host key changes - critical for fault tolerance
+                conn.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
                 if dry_run:
                     _write_runbash_output(
                         output_file,
