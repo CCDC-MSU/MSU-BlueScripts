@@ -36,44 +36,47 @@ class PipelineStep:
 DEFAULT_PIPELINE = [
     # 1. Snapshot
     PipelineStep('script', 'scripts/all/pre-hardening-snapshot.sh'),
-    
+
     # 2. Discovery (Ensure we have fresh facts)
     PipelineStep('action', 'discovery'),
-    
-    # 3. User Hardening (Passwords)
+
+    # 3. Archive SSH keys (before user_hardening adds root key)
+    PipelineStep('script', 'scripts/all/archive_ssh_keys.sh'),
+
+    # 4. User Hardening (Passwords and root key setup)
     PipelineStep('module', 'user_hardening'),
-    
-    # 4. Firewall (Strict Mode - Trusted IPs only)
+
+    # 5. Firewall (Strict Mode - Trusted IPs only)
     PipelineStep('module', 'firewall_hardening'),
-    
-    # 5. SSH Hardening
+
+    # 6. SSH Hardening
     PipelineStep('module', 'ssh_hardening'),
 
-    # 6. Run any additional custom scripts
+    # 7. Run any additional custom scripts
     PipelineStep('module', 'bash_scripts'),
-    
-    # 7. Reboot (Clean slate)
+
+    # 8. Reboot (Clean slate)
     PipelineStep('action', 'reboot'),
-    
-    # 8. Discovery (Refresh facts after reboot)
+
+    # 9. Discovery (Refresh facts after reboot)
     PipelineStep('action', 'discovery'),
 
-    # 9. User Hardening (Rotate again)
+    # 10. User Hardening (Rotate again)
     PipelineStep('module', 'user_hardening'),
-    
-    # 10. Firewall (Allow Internet Mode - for package updates)
+
+    # 11. Firewall (Allow Internet Mode - for package updates)
     PipelineStep('module', 'firewall_hardening_allow_internet'),
-    
-    # 11. Packages & Tools (DISABLED)
+
+    # 12. Packages & Tools (DISABLED)
     # PipelineStep('module', 'package_installer'),
-    
-    # 12. Logging
+
+    # 13. Logging
     PipelineStep('module', 'logging_hardening'),
-    
-    # 13. Final Lockdown (Return to Strict Mode)
+
+    # 14. Final Lockdown (Return to Strict Mode)
     PipelineStep('module', 'firewall_hardening'),
-    
-    # 14. Final Snapshot
+
+    # 15. Final Snapshot
     PipelineStep('script', 'scripts/all/pre-hardening-snapshot.sh'),
 ]
 
@@ -215,7 +218,7 @@ class HardeningOrchestrator:
         # Let's implement basic upload & run here
         results = []
         remote_path = f"/tmp/ccdc_step_{Path(script_path).name}"
-        log_path = f"/root/hardening-logs/step_{Path(script_path).name}.log"
+        log_path = f"/root/logs/hardening-scripts/step_{Path(script_path).name}.log"
         
         if dry_run:
             return [HardeningResult(True, f"bash {script_path}", "Dry Run Script Execution")]
@@ -236,7 +239,7 @@ class HardeningOrchestrator:
             if env_str:
                 cmd = f"{env_str} {cmd}"
             
-            full_cmd = f"mkdir -p /root/hardening-logs && {cmd} 2>&1 | tee {log_path}"
+            full_cmd = f"mkdir -p /root/logs/hardening-scripts && {cmd} 2>&1 | tee {log_path}"
             
             logger.info(f"Running script: {full_cmd}")
             res = self.conn.sudo(full_cmd, warn=True, timeout=300)

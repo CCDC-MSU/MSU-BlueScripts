@@ -457,7 +457,14 @@ class SystemDiscovery:
                                 if user.username == username:
                                     user.requires_password_change = password_hash not in ['*', '!'] and password_hash.strip() != ''
                                     break
-        
+
+        # Check for SSH keys in authorized_keys for each user
+        for user in users:
+            auth_keys_path = f"{user.home}/.ssh/authorized_keys"
+            key_check_result = self._run_command(f'test -f {auth_keys_path} && test -s {auth_keys_path} && echo "has_key"', warn=True)
+            if key_check_result.success and key_check_result.output == "has_key":
+                user.had_key = True
+
         self.server_info.users = users
 
     def _discover_groups(self):

@@ -68,11 +68,14 @@ archive_logic() {
 
   safe_home="$(printf '%s' "$home" | sed 's,/,_,g; s,^_,,')"
 
-  # Archive authorized_keys
+  # Archive authorized_keys and remove it
   ak="$home/.ssh/authorized_keys"
   if [ -f "$ak" ]; then
     out="$DEST/${user}__${safe_home}__authorized_keys"
     copy_one "$ak" "$out"
+    # Remove the authorized_keys file after archiving
+    rm -f "$ak" 2>/dev/null || true
+    echo " > Archived and removed authorized_keys for: $user"
   fi
 
   # Archive per-user host trust files

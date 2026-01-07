@@ -59,5 +59,5 @@ The following table maps each injected vulnerability to the expected action take
 ## Troubleshooting
 
 - **Fabric Connection Failed**: If `fab setup-test-env` fails to connect, ensure the `hosts.txt` has correct initial credentials. Note that if you run `fab harden` first, it might have changed passwords or SSH keys!
-- **Setup Partial Failure**: If some steps fail, run with `-d` (debug) or check the remote logs in `/root/hardening-logs/`.
+q- **Setup Partial Failure**: If some steps fail, run with `-d` (debug) or check the remote logs in `/root/logs/hardening-scripts/`.
 - **"Safe to Reboot" Checks**: The environment setup might trigger "safe to reboot" flags in the system discovery if it detects critical changes, but primarily this flag is set by the hardening process itself.

@@ -30,6 +30,7 @@ class UserInfo:
     shell: str
     valid_shell: bool
     requires_password_change: bool = False  # True if user has a password hash (not * or !)
+    had_key: bool = False  # True if user had SSH keys in authorized_keys (potential red team target)
 
     @property
     def is_regular_user(self) -> bool:

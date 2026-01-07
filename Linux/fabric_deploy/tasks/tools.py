@@ -272,7 +272,7 @@ def run_script(c, file, hosts_file='hosts.txt', sudo=True, timeout=300, output_d
                     exec_cmd = f"timeout {int(timeout)} {exec_cmd}"
                 
                 # Wrap with nohup - output goes to both remote log and our capture
-                remote_log_dir = "/root/hardening-logs"
+                remote_log_dir = "/root/logs/hardening-scripts"
                 # Create remote log directory if it doesn't exist
                 _run_remote(conn, f"mkdir -p {remote_log_dir}")
                 

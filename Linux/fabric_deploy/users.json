@@ -1,13 +1,12 @@
 {
   "regular_users": {
-    "alex": "preset_password_here_neet1337",
-    "blair": "xxxxx",
+    "alex": "",
+    "blair": "",
     "casey": "",
     "devon": "",
     "jordan": "",
     "morgan": "",
-    "quinn": "",
-    "riley": "__PER_HOST__"
+    "quinn": ""
   },
   "super_users": {
     "sam": "",
