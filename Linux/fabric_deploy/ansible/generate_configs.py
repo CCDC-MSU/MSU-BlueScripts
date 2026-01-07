@@ -134,7 +134,7 @@ def generate_inventory(hosts: list) -> dict:
                 'bsd': {'hosts': {}},
             },
             'vars': {
-                'ansible_python_interpreter': '/root/python/bin/python3.12',
+                # 'ansible_python_interpreter': '/root/python/bin/python3.12',
             }
         }
     }

@@ -192,72 +192,106 @@ def harden(c, hosts_file='hosts.txt', dry_run=False, modules=None,
                 connect_kwargs['port'] = server_creds.port
 
             fabric_config = Config(overrides=config_overrides)
-
-            # Attempt 1: Primary Connection
-            try:
-                with Connection(server_creds.host, user=server_creds.user,
-                               config=fabric_config, connect_kwargs=connect_kwargs) as conn:
-                    
-                    # Connection Warmer (explicit check here to catch failures fast)
-                    logger.info("Attempting primary connection...")
+            
+            # Password retry with exponential backoff: 0s, 2s, 4s delays
+            PASSWORD_RETRY_DELAYS = [0, 2, 4]
+            
+            # Helper to attempt a single connection
+            def _try_connection(host, user, config, kwargs, label=""):
+                with Connection(host, user=user, config=config, connect_kwargs=kwargs) as conn:
                     conn.run("true", hide=True, timeout=10)
-                    
-                    # Set keepalive after connection is established
                     if conn.transport:
                         conn.transport.set_keepalive(10)
-                        
-                    return perform_hardening(conn)
-
-            except Exception as e:
-                logger.warning(f"Primary connection to {server_creds.host} failed: {e}")
+                    return conn, perform_hardening(conn, is_fallback=bool(label))
+            
+            last_error = None
+            
+            # Phase 1: Try password auth with retries (if password provided and no key)
+            if server_creds.password and not server_creds.key_file:
+                for attempt, delay in enumerate(PASSWORD_RETRY_DELAYS, 1):
+                    if delay > 0:
+                        logger.info(f"Waiting {delay}s before password retry...")
+                        import time
+                        time.sleep(delay)
+                    
+                    try:
+                        logger.info(f"Password attempt {attempt}/{len(PASSWORD_RETRY_DELAYS)} for {server_creds.host}...")
+                        with Connection(server_creds.host, user=server_creds.user,
+                                       config=fabric_config, connect_kwargs=connect_kwargs) as conn:
+                            conn.run("true", hide=True, timeout=10)
+                            if conn.transport:
+                                conn.transport.set_keepalive(10)
+                            logger.info(f"Password auth succeeded on attempt {attempt}")
+                            return perform_hardening(conn)
+                    except Exception as e:
+                        last_error = e
+                        logger.warning(f"Password attempt {attempt} failed: {e}")
                 
-                # Attempt 2: Fallback to Root Key
+                logger.warning(f"All {len(PASSWORD_RETRY_DELAYS)} password attempts failed, trying SSH key fallback...")
+            
+            # Phase 2: Try key from hosts.txt (if specified)
+            elif server_creds.key_file:
                 try:
-                    logger.info(f"Attempting fallback to COMPROMISED KEY for {server_creds.host}...")
-                    
-                    # Resolve key path relative to this file
-                    # tasks/hardening.py -> ../keys/test-root-key.private
-                    fallback_key = os.path.abspath(os.path.join(os.path.dirname(__file__), "../keys/test-root-key.private"))
-                    
-                    if not os.path.exists(fallback_key):
-                        logger.error(f"Fallback key not found at {fallback_key}")
-                        raise e # Re-raise original error if we can't try fallback
-
-                    fallback_kwargs = connect_kwargs.copy()
-                    fallback_kwargs['key_filename'] = [fallback_key]
-                    fallback_kwargs.pop('password', None)
-                    
-                    # For root fallback, we effectively don't need sudo password
-                    fallback_config = Config(overrides={'load_ssh_configs': False})
-
-                    with Connection(server_creds.host, user='root',
-                                   config=fallback_config, connect_kwargs=fallback_kwargs) as conn:
-                        
+                    logger.info(f"Attempting connection with specified key: {server_creds.key_file}")
+                    with Connection(server_creds.host, user=server_creds.user,
+                                   config=fabric_config, connect_kwargs=connect_kwargs) as conn:
                         conn.run("true", hide=True, timeout=10)
-                        
-                        # Set keepalive after connection is established
                         if conn.transport:
                             conn.transport.set_keepalive(10)
-                            
-                        logger.info(f"FALLBACK SUCCESS: Connected as root using recovery key!")
-                        return perform_hardening(conn, is_fallback=True)
+                        return perform_hardening(conn)
+                except Exception as e:
+                    last_error = e
+                    logger.warning(f"Key auth with {server_creds.key_file} failed: {e}")
+            
+            # Phase 3: Fallback to recovery key
+            try:
+                logger.info(f"Attempting fallback to RECOVERY KEY for {server_creds.host}...")
+                
+                # Resolve key path relative to this file
+                # tasks/hardening.py -> ../keys/test-root-key.private
+                fallback_key = os.path.abspath(os.path.join(os.path.dirname(__file__), "../keys/test-root-key.private"))
+                
+                if not os.path.exists(fallback_key):
+                    logger.error(f"Recovery key not found at {fallback_key}")
+                    if last_error:
+                        raise last_error
+                    raise FileNotFoundError(f"No valid auth method and recovery key missing: {fallback_key}")
 
-                except Exception as fallback_e:
-                    logger.error(f"Fallback connection failed: {fallback_e}")
-                    # Log original failure as the primary cause? or fallback? 
-                    # Let's log that hardening failed completely.
-                    
-                    # Handle connection reset specially if needed via helper
-                    if is_connection_reset(e):
-                         logger.error(f"Hardening failed for {server_creds.host}: Connection reset by peer")
-                    else:
-                         logger.error(f"Hardening failed for {server_creds.host}: {e}")
-                    
-                    return {
-                        'host': server_creds.host,
-                        'status': f'error: {e} (fallback also failed: {fallback_e})',
-                        'log_file': str(log_path)
-                    }
+                fallback_kwargs = {
+                    'allow_agent': False,
+                    'look_for_keys': False,
+                    'timeout': 90,
+                    'key_filename': [fallback_key]
+                }
+                if server_creds.port != 22:
+                    fallback_kwargs['port'] = server_creds.port
+                
+                # For root fallback, we don't need sudo password
+                fallback_config = Config(overrides={'load_ssh_configs': False})
+
+                with Connection(server_creds.host, user='root',
+                               config=fallback_config, connect_kwargs=fallback_kwargs) as conn:
+                    conn.run("true", hide=True, timeout=10)
+                    if conn.transport:
+                        conn.transport.set_keepalive(10)
+                    logger.info(f"RECOVERY KEY SUCCESS: Connected as root!")
+                    return perform_hardening(conn, is_fallback=True)
+
+            except Exception as fallback_e:
+                logger.error(f"Recovery key connection failed: {fallback_e}")
+                
+                # Determine primary error to report
+                primary_error = last_error if last_error else fallback_e
+                if is_connection_reset(primary_error):
+                    logger.error(f"Hardening failed for {server_creds.host}: Connection reset by peer")
+                else:
+                    logger.error(f"Hardening failed for {server_creds.host}: {primary_error}")
+                
+                return {
+                    'host': server_creds.host,
+                    'status': f'error: {primary_error} (recovery key also failed: {fallback_e})',
+                    'log_file': str(log_path)
+                }
 
     results = []
     max_workers = min(16, len(servers)) if servers else 1

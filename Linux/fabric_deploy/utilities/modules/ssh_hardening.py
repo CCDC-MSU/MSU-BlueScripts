@@ -455,27 +455,17 @@ AllowUsers {allowed_users_str}
             # This is critical because after hardening, root password login is disabled
             if user == 'root' and os.path.exists(ROOT_KEY_PATH):
                 logger.info(f"Using root recovery key for connectivity test: {ROOT_KEY_PATH}")
-                # We prioritize this key. If lists are supported, we could append, 
-                # but for simplicity/reliability we'll set it as the primary key if it exists.
-                # Fabric/Paramiko can handle a list of keys in key_filename too.
-                current_keys = []
+                current_keys = [ROOT_KEY_PATH]
                 if key_file:
                      if isinstance(key_file, list):
                          current_keys.extend(key_file)
                      else:
                          current_keys.append(key_file)
-                
-                # Prepend the root key
-                current_keys.insert(0, ROOT_KEY_PATH)
                 connect_kwargs['key_filename'] = current_keys
-                
-                # If we have a key, we might not strictly need the password for auth,
-                # but we keep it for sudo if needed (though root usually doesn't need password for sudo)
-                if password:
-                    connect_kwargs['password'] = password
+                # Do NOT use password for root - key auth only after SSH hardening
 
             else:
-                 # Standard logic
+                 # Standard logic: use key if available, else password
                 if key_file:
                     connect_kwargs['key_filename'] = key_file
                 elif password:
@@ -486,21 +476,31 @@ AllowUsers {allowed_users_str}
                 
             config = Config(overrides=config_overrides)
             
-            # Test new connection with a timeout
+            # Retry with increasing delays (sshd needs time to restart after reload)
+            max_retries = 3
+            delays = [3, 5, 8]  # Seconds to wait before each attempt
             test_success = False
             error_msg = None
             
-            try:
-                with Connection(host, user=user, config=config, connect_kwargs=connect_kwargs) as test_conn:
-                    # Simple connectivity test
-                    result = test_conn.run('echo "SSH test successful"', hide=True, warn=True, timeout=10)
-                    test_success = result.ok
-                    if not test_success:
-                        error_msg = f"SSH test command failed: {result.stderr}"
-                        
-            except Exception as e:
-                test_success = False
-                error_msg = f"SSH connection failed: {str(e)}"
+            for attempt in range(max_retries):
+                delay = delays[attempt] if attempt < len(delays) else 5
+                logger.info(f"Testing SSH connectivity (attempt {attempt + 1}/{max_retries}, waiting {delay}s)...")
+                time.sleep(delay)
+                
+                try:
+                    with Connection(host, user=user, config=config, connect_kwargs=connect_kwargs) as test_conn:
+                        result = test_conn.run('echo "SSH test successful"', hide=True, warn=True, timeout=10)
+                        test_success = result.ok
+                        if not test_success:
+                            error_msg = f"SSH test command failed: {result.stderr}"
+                        else:
+                            error_msg = None
+                            break  # Success, exit retry loop
+                            
+                except Exception as e:
+                    test_success = False
+                    error_msg = f"SSH connection failed: {str(e)}"
+                    logger.warning(f"Connectivity check attempt {attempt + 1} failed: {e}")
                 
             if test_success:
                 msg = "SSH connectivity test successful - new configuration is working"

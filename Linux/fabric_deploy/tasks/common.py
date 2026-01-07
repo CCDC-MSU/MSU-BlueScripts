@@ -8,7 +8,7 @@ def _get_console_logger():
     if not console_logger.handlers:
         handler = logging.StreamHandler()
         handler.setLevel(logging.INFO)
-        handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)-5s %(message)s', datefmt='%H:%M:%S'))
         console_logger.addHandler(handler)
         console_logger.setLevel(logging.INFO)
         console_logger.propagate = False
@@ -23,7 +23,7 @@ def _configure_parallel_logging():
 
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.ERROR)
-    console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    console_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)-5s %(message)s', datefmt='%H:%M:%S'))
     root.addHandler(console_handler)
 
     logging.getLogger('paramiko').setLevel(logging.WARNING)
@@ -61,7 +61,7 @@ def _host_log_handler(task_name, host_label, timestamp=None):
 
     handler = logging.FileHandler(log_path)
     handler.setLevel(logging.DEBUG)
-    handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+    handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)-5s %(message)s', datefmt='%H:%M:%S'))
     handler.addFilter(_ThreadFilter(threading.get_ident()))
 
     root = logging.getLogger()

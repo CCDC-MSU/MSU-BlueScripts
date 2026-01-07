@@ -11,11 +11,11 @@
   },
   "super_users": {
     "sam": "",
-    "taylor": ""
+    "taylor": "",
+    "root": "__PER_HOST__"
   },
   "do_not_change_users": {
     "black-team-acc": "do not change password",
-    "root": "don't mess with root while testing",
     "scan-agent": "added by the hardenig script"
   }
 }

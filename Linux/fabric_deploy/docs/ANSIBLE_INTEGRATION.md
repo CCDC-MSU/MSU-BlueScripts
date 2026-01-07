@@ -100,7 +100,7 @@ The hybrid system has been tested and works on:
    - Syncs configuration templates from `configs/` directory
    - Runs before every Ansible operation to ensure consistency
 
-**4. Module Integration** (`utilities/modules/logging_setup.py`)
+**4. Module Integration** (`utilities/modules/logging_hardening.py`)
    - Hardening modules can call `_install_packages_via_ansible()`
    - Seamlessly integrates Ansible into Fabric workflow
    - Falls back gracefully if Ansible fails
@@ -184,7 +184,7 @@ fab harden
 **2. Module Execution Phase** (Hybrid)
 ```
   └─> HardeningDeployer.deploy()
-      └─> Step 13: logging_setup module
+      └─> Step 13: logging_hardening module
           ├─> _install_packages_via_ansible()  ← ANSIBLE CALL
           │   ├─> Syncs configs (generate_configs.py)
           │   │   - Converts hosts.txt → ansible/inventory/hosts.yaml
@@ -203,7 +203,7 @@ fab harden
 
 **3. Ansible Subprocess Details**
 ```python
-# In utilities/modules/logging_setup.py:
+# In utilities/modules/logging_hardening.py:
 
 def _install_packages_via_ansible(self, conn, server_info):
     # 1. Sync inventory and configs
@@ -289,14 +289,14 @@ Pipeline Step 13: Logging Setup
 10. User Hardening (Round 2)  [Fabric only]
 11. Allow Internet            [Fabric only]
 12. Install & Update          [Could use Ansible - currently Fabric]
-13. Logging Setup             [Hybrid: Ansible + Fabric] ← YOU ARE HERE
+13. Logging Hardening         [Hybrid: Ansible + Fabric] ← YOU ARE HERE
 14. Final Snapshot            [Fabric only]
 ```
 
 ### Why Only Logging Setup Uses Ansible (For Now)?
 
 **Current State:**
-- Only `logging_setup` module uses Ansible integration
+- Only `logging_hardening` module uses Ansible integration
 - Works perfectly for its use case (rsyslog, auditd, logrotate)
 
 **Future Expansion Potential:**
@@ -326,7 +326,7 @@ These files are **regenerated automatically** from source files:
 
 **How regeneration works:**
 ```python
-# In utilities/modules/logging_setup.py, before every Ansible call:
+# In utilities/modules/logging_hardening.py, before every Ansible call:
 subprocess.run(['python3', 'generate_configs.py'], cwd='ansible/')
 ```
 
@@ -478,10 +478,10 @@ uv run fab ansible-sync
 **Option 1: Test logging_setup module only**
 ```bash
 # Dry run (safe - no changes)
-uv run fab test-module --module=logging_setup
+uv run fab test-module --module=logging_hardening
 
 # Live run (actual installation and configuration)
-uv run fab test-module --module=logging_setup --live
+uv run fab test-module --module=logging_hardening --live
 ```
 
 **Option 2: Test Ansible connectivity**
@@ -687,7 +687,7 @@ UNREACHABLE! => {"changed": false, "msg": "Failed to connect to host"}
 
 **If you're adding Ansible to a new module:**
 
-1. **Copy the pattern from logging_setup.py:**
+1. **Copy the pattern from logging_hardening.py:**
    ```python
    from pathlib import Path
    ANSIBLE_DIR = Path(__file__).parent.parent.parent / "ansible"
@@ -731,7 +731,7 @@ UNREACHABLE! => {"changed": false, "msg": "Failed to connect to host"}
 Enable verbose Ansible output:
 
 ```python
-# In utilities/modules/logging_setup.py:
+# In utilities/modules/logging_hardening.py:
 result = subprocess.run([
     'ansible-playbook',
     'playbooks/install_logging_packages.yaml',
@@ -769,7 +769,7 @@ vim users.json
 uv run fab harden
 
 # Test specific module
-uv run fab test-module --module=logging_setup --live
+uv run fab test-module --module=logging_hardening --live
 
 # Ansible utilities
 uv run fab ansible-ping
@@ -796,5 +796,5 @@ cat logs/harden/{friendly_name}/latest.log
 
 **For more information:**
 - Main workflow guide: `docs/workflow_guide.md`
-- Logging module details: `docs/README_logging_setup.md`
+- Logging module details: `docs/README_logging_hardening.md`
 - Ansible official docs: https://docs.ansible.com/

@@ -14,8 +14,7 @@ from .models import ServerInfo
 from .modules import (
     HardeningModule, HardeningResult,
     AgentAccountModule,
-    PackageInstallerModule,
-    LoggingSetupModule,
+    LoggingHardeningModule,
     SSHHardeningModule,
     FirewallHardeningModule,
     MODE_STRICT,
@@ -65,11 +64,11 @@ DEFAULT_PIPELINE = [
     # 10. Firewall (Allow Internet Mode - for package updates)
     PipelineStep('module', 'firewall_hardening_allow_internet'),
     
-    # 11. Packages & Tools
-    PipelineStep('module', 'package_installer'),
+    # 11. Packages & Tools (DISABLED)
+    # PipelineStep('module', 'package_installer'),
     
     # 12. Logging
-    PipelineStep('module', 'logging_setup'),
+    PipelineStep('module', 'logging_hardening'),
     
     # 13. Final Lockdown (Return to Strict Mode)
     PipelineStep('module', 'firewall_hardening'),
@@ -102,8 +101,8 @@ class HardeningOrchestrator:
         """Initialize all hardening modules and return map"""
         modules = [
             AgentAccountModule(self.conn, self.server_info, self.os_family),
-            PackageInstallerModule(self.conn, self.server_info, self.os_family),
-            LoggingSetupModule(self.conn, self.server_info, self.os_family),
+            # PackageInstallerModule(self.conn, self.server_info, self.os_family),
+            LoggingHardeningModule(self.conn, self.server_info, self.os_family),
             SSHHardeningModule(self.conn, self.server_info, self.os_family),
             # Strict mode firewall (default)
             FirewallHardeningModule(self.conn, self.server_info, self.os_family, mode=MODE_STRICT),
@@ -274,27 +273,76 @@ class HardeningOrchestrator:
                 self.conn.sudo("reboot", warn=True)
 
                 logger.info("Waiting for system to go down...")
-                time.sleep(5) # Give it a moment to start shutting down
+                time.sleep(5) 
                 
-                logger.info("Waiting for system to come back (30s)...")
-                time.sleep(30) # Primitive wait
-                # TODO: Implement robust wait_for_ssh logic
-                # For now assume it comes back or we fail subsequent steps?
-                # Ideally we should verify connectivity
-                self.conn.run("hostname") # Trigger reconnection attempt?
-                return [HardeningResult(True, "reboot", "System Reboot")]
-                
-            except Exception as e:
-                logger.warning(f"Reboot triggered exception (expected): {e}")
-                
-                 # Try to reconnect
+                logger.info("Waiting for system to come back (max 300s)...")
+                # Close the old connection explicitly
                 try:
-                    time.sleep(10)
-                    self.conn.open()
-                    return [HardeningResult(True, "reboot", "System Reboot (Reconnected)")]
+                    self.conn.close()
                 except:
                     pass
-                return [HardeningResult(True, "reboot", "System Reboot (Triggered)")]
+
+                # Poll for reconnection with a fresh connection (host key may change)
+                from fabric import Connection, Config
+                deadline = time.time() + 300  # 5 minutes timeout
+                reconnected = False
+                
+                # Build fresh connection kwargs with host key checking disabled
+                creds = self.server_info.credentials
+                fresh_connect_kwargs = {
+                    'allow_agent': False,
+                    'look_for_keys': False,
+                    'timeout': 15,
+                }
+                # Disable strict host key checking for reconnection after reboot
+                # Host keys may regenerate on some systems
+                import paramiko
+                fresh_connect_kwargs['disabled_algorithms'] = {}
+                
+                # Use known SSH key
+                key_path = creds.key_file if creds.key_file else str(Path(__file__).parent.parent / "keys" / "test-root-key.private")
+                fresh_connect_kwargs['key_filename'] = key_path
+                
+                # Ensure we don't load system known_hosts, which would cause "Host key mismatch" errors
+                # if the key changed (not just missing)
+                fresh_config = Config(overrides={'load_ssh_configs': False, 'load_system_host_keys': False})
+                
+                while time.time() < deadline:
+                    try:
+                        # Create fresh connection each attempt to avoid cached host key
+                        test_conn = Connection(
+                            creds.host, 
+                            user=creds.user, 
+                            port=creds.port,
+                            config=fresh_config,
+                            connect_kwargs=fresh_connect_kwargs
+                        )
+                        # Override paramiko's host key policy
+                        test_conn.client = paramiko.SSHClient()
+                        test_conn.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                        test_conn.open()
+                        
+                        # Verify it's actually responsive
+                        test_conn.run("echo 'Reconnected'", hide=True, timeout=5)
+                        
+                        # Replace our connection with the fresh one
+                        self.conn = test_conn
+                        reconnected = True
+                        logger.info("System is back online!")
+                        break
+                    except Exception as e:
+                        logger.debug(f"Reconnection attempt failed: {e}")
+                        time.sleep(5)
+                
+                if not reconnected:
+                    logger.error("Timed out waiting for system to reboot.")
+                    return [HardeningResult(False, "reboot", "System Reboot", error="Timed out waiting for host to come back")]
+
+                return [HardeningResult(True, "reboot", "System Reboot")]
+
+            except Exception as e:
+                logger.warning(f"Reboot trigger or wait failed: {e}")
+                return [HardeningResult(False, "reboot", "System Reboot", error=str(e))]
 
         elif action == 'discovery':
             if dry_run:
@@ -390,11 +438,49 @@ class HardeningOrchestrator:
                 f.write(f"**Date**: {datetime.now().isoformat()}\n")
                 f.write(f"**Host**: {self.server_info.hostname} ({self.os_family})\n\n")
 
+                # === System Information ===
+                f.write("## System Information\n")
+                os_info = self.server_info.os
+                f.write(f"| Property | Value |\n")
+                f.write(f"|----------|-------|\n")
+                f.write(f"| **OS** | {os_info.distro} {os_info.version} |\n")
+                f.write(f"| **Kernel** | {os_info.kernel} |\n")
+                f.write(f"| **Architecture** | {os_info.architecture} |\n")
+                f.write(f"| **Init System** | {self.server_info.init_system} |\n")
+                pkg_mgrs = ', '.join(self.server_info.package_managers) if self.server_info.package_managers else 'None detected'
+                f.write(f"| **Package Managers** | {pkg_mgrs} |\n")
+                f.write(f"| **Default Shell** | {self.server_info.default_shell} |\n")
+                f.write(f"| **Sudo Group** | {self.server_info.sudo_group} |\n")
+                f.write("\n")
+
+                # === Failures Summary ===
+                all_failures = []
+                for module_name, module_results in results.items():
+                    for r in module_results:
+                        if not r.success:
+                            all_failures.append((module_name, r.description, r.error or 'Unknown error'))
+                
+                if all_failures:
+                    f.write("## ⚠️ Failures Summary\n")
+                    f.write(f"**Total Failures**: {len(all_failures)}\n\n")
+                    f.write("The following items failed and may need **manual intervention**:\n\n")
+                    for module_name, desc, error in all_failures:
+                        # Truncate long errors for readability
+                        error_short = error[:200] + '...' if len(error) > 200 else error
+                        f.write(f"- [ ] **{module_name}**: {desc}\n")
+                        f.write(f"  - Error: `{error_short}`\n")
+                    f.write("\n")
+                else:
+                    f.write("## ✅ No Failures\n")
+                    f.write("All hardening steps completed successfully.\n\n")
+
+                # === Execution Summary ===
                 f.write("## Execution Summary\n")
                 f.write("```\n")
                 f.write(summary)
                 f.write("\n```\n\n")
 
+                # === User Management Changes ===
                 f.write("## User Management Changes\n")
                 user_res = results.get('user_hardening', [])
                 pwd_log = next((r.output for r in user_res if r.command.startswith('write_password_log')), None)
@@ -411,6 +497,7 @@ class HardeningOrchestrator:
                     f.write("*No password changes recorded or log not found.*\n")
                 f.write("\n")
 
+                # === Sudoers Configuration ===
                 f.write("## Sudoers Configuration\n")
                 sudoers_dump = getattr(self.server_info, 'sudoers_dump', None)
                 if sudoers_dump:
@@ -420,8 +507,41 @@ class HardeningOrchestrator:
                     f.write("\n```\n")
                 else:
                     f.write("*Sudoers dump not available.*\n")
+                f.write("\n")
 
-                f.write("\n---\nGenerated by CCDC Fabric Deploy\n")
+                # === Network Information ===
+                f.write("## Network Information\n")
+                open_ports = self.server_info.network.open_ports
+                ports_str = ', '.join(open_ports) if open_ports else 'None detected'
+                f.write(f"- **Open Ports**: {ports_str}\n")
+                route = self.server_info.network.default_route.strip() if self.server_info.network.default_route else 'Not available'
+                f.write(f"- **Default Route**: {route}\n")
+                f.write("\n")
+
+                # === Security Tools ===
+                f.write("## Security Tools\n")
+                installed = [name for name, present in self.server_info.security_tools.items() if present]
+                missing = [name for name, present in self.server_info.security_tools.items() if not present]
+                f.write(f"- **Installed**: {', '.join(sorted(installed)) if installed else 'None'}\n")
+                if missing:
+                    f.write(f"- **Missing** (may need manual install): {', '.join(sorted(missing))}\n")
+                f.write("\n")
+
+                # === Running Services ===
+                f.write("## Running Services\n")
+                services = self.server_info.services
+                if services:
+                    f.write(f"*{len(services)} services detected*\n\n")
+                    # Show as compact list
+                    for svc in sorted(services)[:30]:
+                        f.write(f"- {svc}\n")
+                    if len(services) > 30:
+                        f.write(f"- *...and {len(services) - 30} more*\n")
+                else:
+                    f.write("*No services detected*\n")
+                f.write("\n")
+
+                f.write("---\nGenerated by CCDC Fabric Deploy\n")
 
             logger.info(f"Report generated: {report_path}")
             return str(report_path)

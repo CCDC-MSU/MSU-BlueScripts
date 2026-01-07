@@ -22,7 +22,7 @@ PACKAGE_MANAGER_INSTALL_CMD = {
     "pacman":   "pacman -S {} --noconfirm",
 
     # Gentoo
-    "emerge":   "PAGER=cat emerge --ask=n {}",
+    "emerge":   "PAGER=cat emerge --ask=n --autounmask=y --autounmask-continue {}",
 
     # Alpine
     "apk":      "apk add {}",

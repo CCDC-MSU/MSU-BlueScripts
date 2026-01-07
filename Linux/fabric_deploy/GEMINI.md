@@ -67,7 +67,7 @@ Python classes that generate platform-specific shell commands to apply security 
     - Installs essential defense tools (`auditd`, `vim`, `tmux`, `zsh`, `curl`).
     - Updates existing packages (conditionally, as this can be slow).
     - Maps generic tool names to distro-specific package names.
-5.  **Logging Setup** (`logging_setup.py`):
+5.  **Logging Hardening** (`logging_hardening.py`):
     - Configures `rsyslog` / `syslog` / `journald`.
     - Sets up `auditd` with CCDC-specific rules (monitoring `/etc/passwd`, execve, etc.).
     - Configures `logrotate`.

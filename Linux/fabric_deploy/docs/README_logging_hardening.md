@@ -1,4 +1,4 @@
-# Logging Setup Module
+# Logging Hardening Module
 
 **Go back to [main README](README.md)**
 
@@ -16,7 +16,7 @@ This solves the challenge of different package names across distributions (e.g.,
 
 ## Overview
 
-The `logging_setup` module configures the native logging services on the target system to create a robust and detailed audit trail. It differentiates between Linux and BSD systems to apply the appropriate configurations.
+The `logging_hardening` module configures the native logging services on the target system to create a robust and detailed audit trail. It differentiates between Linux and BSD systems to apply the appropriate configurations.
 
 ### Key Features
 
@@ -111,10 +111,10 @@ This module is typically run as part of the main hardening pipeline. However, yo
 
 *   **Test in Dry-Run Mode (Safe)**:
     ```bash
-    fab test-module --module=logging_setup
+    fab test-module --module=logging_hardening
     ```
 
 *   **Execute in Live Mode**:
     ```bash
-    fab test-module --module=logging_setup --live
+    fab test-module --module=logging_hardening --live
     ```
