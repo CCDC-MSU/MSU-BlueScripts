@@ -35,6 +35,9 @@ INTERNET_PORTS = {
     25: ["tcp"],          # SMTP
 }
 
+# UID range for system users (0-999 are system accounts, 1000+ are human users)
+SYSTEM_UID_MAX = 999
+
 # Firewall mode constants
 MODE_STRICT = "strict"
 MODE_ALLOW_INTERNET = "allow_internet"
@@ -48,19 +51,20 @@ class FirewallHardeningModule(HardeningModule):
     def __init__(self, connection, server_info, os_family, mode: str = MODE_STRICT):
         """
         Initialize firewall hardening module.
-        
+
         Args:
             connection: Fabric connection
             server_info: ServerInfo object with system details
             os_family: OS family string
             mode: Firewall mode - "strict" (default) or "allow_internet"
                   - strict: Only traffic from trusted IPs allowed
-                  - allow_internet: Allows outbound HTTP/HTTPS/DNS/NTP/SMTP for root user
+                  - allow_internet: Allows outbound HTTP/HTTPS/DNS/NTP/SMTP for system users (UID 0-999)
         """
         super().__init__(connection, server_info, os_family)
         self.dead_mans_switch_pid = None
         self.active_backend = None
         self.mode = mode if mode in (MODE_STRICT, MODE_ALLOW_INTERNET) else MODE_STRICT
+        self.uses_hybrid_nftables = False  # Track if we injected custom nftables rules
         logger.info(f"Firewall module initialized with mode: {self.mode}")
 
     def get_name(self) -> str:
@@ -265,6 +269,9 @@ class FirewallHardeningModule(HardeningModule):
         elif self.active_backend == "firewalld":
             # Fix: set back to trusted so reload restores an open state
             revert_cmd = "firewall-cmd --set-default-zone=trusted && firewall-cmd --reload"
+            # If using hybrid nftables mode, also cleanup the custom table
+            if self.uses_hybrid_nftables:
+                revert_cmd = f"nft delete table inet ccdc_internet 2>/dev/null; {revert_cmd}"
         elif self.active_backend == "nft":
             revert_cmd = "nft flush ruleset"
         elif self.active_backend == "pf":
@@ -313,6 +320,75 @@ class FirewallHardeningModule(HardeningModule):
 
     # --- Backend Specific Implementations ---
 
+    def _inject_nft_user_rules_for_firewalld(self, conn):
+        """
+        Inject native nftables rules alongside firewalld for user-filtered internet access.
+        Creates a custom table with higher priority than firewalld to enable user filtering.
+
+        This is necessary because firewalld's rich rules don't support user matching when
+        using the nftables backend.
+        """
+        logger.info("Injecting native nftables rules for user filtering (firewalld+nftables)")
+
+        # Clean up any existing rules from previous runs
+        conn.sudo("nft delete table inet ccdc_internet 2>/dev/null || true", hide=True, warn=True)
+
+        # Build ruleset as a list
+        rules = [
+            "add table inet ccdc_internet",
+            # Priority -10 = runs before firewalld (priority 0)
+            "add chain inet ccdc_internet output { type filter hook output priority -10 ; }",
+            "add chain inet ccdc_internet input { type filter hook input priority -10 ; }",
+        ]
+
+        # Add rules for each allowed port (system users: UID 0-999)
+        for port, protocols in INTERNET_PORTS.items():
+            for proto in protocols:
+                # Outbound: Allow system users (UID 0-999) to initiate
+                rules.append(
+                    f"add rule inet ccdc_internet output {proto} dport {port} "
+                    f"meta skuid 0-{SYSTEM_UID_MAX} ct state new,established accept"
+                )
+                # Inbound: Allow established/related responses
+                rules.append(
+                    f"add rule inet ccdc_internet input {proto} sport {port} "
+                    f"ct state established,related accept"
+                )
+
+        # Create ruleset content
+        ruleset = "\n".join(rules)
+
+        # Apply atomically via temp file
+        try:
+            # Write to temp file
+            conn.run(f"cat > /tmp/ccdc_internet.nft << 'EOF'\n{ruleset}\nEOF", hide=True)
+
+            # Apply the ruleset
+            conn.sudo("nft -f /tmp/ccdc_internet.nft", hide=True, timeout=10)
+            logger.info("Successfully injected nftables user filtering rules")
+
+            # Set flag to track that we're using hybrid mode
+            self.uses_hybrid_nftables = True
+
+            # Attempt to persist: Add to nftables include directory if available
+            # Check for common nftables config locations
+            if conn.run("test -d /etc/nftables", warn=True, hide=True).ok:
+                conn.sudo("cp /tmp/ccdc_internet.nft /etc/nftables/ccdc_internet.nft", hide=True, warn=True)
+                # Try to add include to main config if not present
+                for config_path in ["/etc/sysconfig/nftables.conf", "/etc/nftables.conf"]:
+                    if conn.run(f"test -f {config_path}", warn=True, hide=True).ok:
+                        conn.sudo(
+                            f"grep -q 'ccdc_internet.nft' {config_path} || "
+                            f"echo 'include \"/etc/nftables/ccdc_internet.nft\"' >> {config_path}",
+                            warn=True, hide=True
+                        )
+                        logger.info(f"Added persistence to {config_path}")
+                        break
+
+        except Exception as e:
+            logger.warning(f"Failed to inject nftables rules: {e}")
+            raise
+
     def _apply_ufw(self, conn):
         try:
             # 0. Ensure conntrack
@@ -334,16 +410,16 @@ class FirewallHardeningModule(HardeningModule):
                 conn.sudo(f"ufw allow from {ip}", hide=True)
                 conn.sudo(f"ufw allow out to {ip}", hide=True)
             
-            # 5. Allow Internet Mode (root only) - uses iptables directly
+            # 5. Allow Internet Mode (system users only) - uses iptables directly
             # UFW doesn't support owner matching, so we inject iptables rules
             if self.mode == MODE_ALLOW_INTERNET:
-                logger.info("Adding allow_internet rules (root only) via iptables...")
+                logger.info("Adding allow_internet rules (system users: UID 0-999) via iptables...")
                 for port, protocols in INTERNET_PORTS.items():
                     for proto in protocols:
-                        # Outbound: Allow root user to initiate connections
+                        # Outbound: Allow system users (UID 0-999) to initiate connections
                         conn.sudo(
                             f"iptables -I ufw-before-output -p {proto} --dport {port} "
-                            f"-m owner --uid-owner 0 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT",
+                            f"-m owner --uid-owner 0-{SYSTEM_UID_MAX} -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT",
                             hide=True
                         )
                         # Inbound: Allow established/related responses
@@ -407,28 +483,21 @@ class FirewallHardeningModule(HardeningModule):
             # 4. Set Default Zone to Drop
             conn.sudo("firewall-cmd --set-default-zone=drop", hide=True, timeout=10)
             
-            # 5. Allow Internet Mode (root only)
+            # 5. Allow Internet Mode (system users only)
             if self.mode == MODE_ALLOW_INTERNET:
                 if uses_nftables:
-                    # Use rich rules for nftables backend (no user matching available)
-                    logger.info("Adding allow_internet rules via firewalld rich rules (nftables backend)...")
-                    for port, protocols in INTERNET_PORTS.items():
-                        for proto in protocols:
-                            # Allow outbound to specific ports
-                            conn.sudo(
-                                f"firewall-cmd --zone=drop --add-rich-rule='"
-                                f"rule family=ipv4 port port={port} protocol={proto} accept'",
-                                hide=True, warn=True, timeout=30
-                            )
+                    # Use native nftables for user filtering (firewalld rich rules don't support it)
+                    logger.info("Using hybrid nftables injection for user filtering (firewalld+nftables)...")
+                    self._inject_nft_user_rules_for_firewalld(conn)
                 else:
                     # Use direct rules (iptables backend) with owner matching
-                    logger.info("Adding allow_internet rules (root only) via firewalld direct rules...")
+                    logger.info("Adding allow_internet rules (system users: UID 0-999) via firewalld direct rules...")
                     for port, protocols in INTERNET_PORTS.items():
                         for proto in protocols:
-                            # Outbound: Allow root user to initiate connections
+                            # Outbound: Allow system users (UID 0-999) to initiate connections
                             conn.sudo(
                                 f"firewall-cmd --direct --add-rule ipv4 filter OUTPUT 1 "
-                                f"-p {proto} --dport {port} -m owner --uid-owner 0 "
+                                f"-p {proto} --dport {port} -m owner --uid-owner 0-{SYSTEM_UID_MAX} "
                                 f"-m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT",
                                 hide=True, timeout=30
                             )
@@ -483,15 +552,15 @@ class FirewallHardeningModule(HardeningModule):
             cmds.append(f"iptables -A INPUT -s {ip} -j ACCEPT")
             cmds.append(f"iptables -A OUTPUT -d {ip} -j ACCEPT")
         
-        # Allow Internet Mode (root only)
+        # Allow Internet Mode (system users only)
         if self.mode == MODE_ALLOW_INTERNET:
-            logger.info("Adding allow_internet rules (root only) to iptables...")
+            logger.info("Adding allow_internet rules (system users: UID 0-999) to iptables...")
             for port, protocols in INTERNET_PORTS.items():
                 for proto in protocols:
-                    # Outbound: Allow root user to initiate connections
+                    # Outbound: Allow system users (UID 0-999) to initiate connections
                     cmds.append(
                         f"iptables -A OUTPUT -p {proto} --dport {port} "
-                        f"-m owner --uid-owner 0 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT"
+                        f"-m owner --uid-owner 0-{SYSTEM_UID_MAX} -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT"
                     )
                     # Inbound: Allow established/related responses
                     cmds.append(
@@ -542,15 +611,15 @@ class FirewallHardeningModule(HardeningModule):
             config_lines.append(f"add rule inet filter input ip saddr {ip} accept")
             config_lines.append(f"add rule inet filter output ip daddr {ip} accept")
         
-        # Allow Internet Mode (root only) - uses meta skuid for user matching
+        # Allow Internet Mode (system users only) - uses meta skuid for user matching
         if self.mode == MODE_ALLOW_INTERNET:
-            logger.info("Adding allow_internet rules (root only) to nftables config...")
+            logger.info("Adding allow_internet rules (system users: UID 0-999) to nftables config...")
             for port, protocols in INTERNET_PORTS.items():
                 for proto in protocols:
-                    # Outbound: Allow root user (uid 0) to initiate connections
+                    # Outbound: Allow system users (UID 0-999) to initiate connections
                     config_lines.append(
                         f"add rule inet filter output {proto} dport {port} "
-                        f"meta skuid 0 ct state new,established accept"
+                        f"meta skuid 0-{SYSTEM_UID_MAX} ct state new,established accept"
                     )
                     # Inbound: Allow established/related responses
                     config_lines.append(
@@ -653,15 +722,15 @@ class FirewallHardeningModule(HardeningModule):
                 conn.sudo(f"ipfw add {rule_id+1} allow ip from me to {ip} out", hide=True, timeout=10)
                 rule_id += 10
             
-            # Allow Internet Mode (root only) - uses uid matching
+            # Allow Internet Mode (system users only) - uses uid matching
             if self.mode == MODE_ALLOW_INTERNET:
-                logger.info("Adding allow_internet rules (root only) to ipfw...")
+                logger.info("Adding allow_internet rules (system users: UID 0-999) to ipfw...")
                 base_rule = 200
                 for port, protocols in INTERNET_PORTS.items():
                     for proto in protocols:
-                        # Outbound: Allow root user (uid 0) to initiate connections with state tracking
+                        # Outbound: Allow system users (UID 0-999) to initiate connections with state tracking
                         conn.sudo(
-                            f"ipfw add {base_rule} allow {proto} from me to any {port} out uid 0 keep-state",
+                            f"ipfw add {base_rule} allow {proto} from me to any {port} out uid 0:{SYSTEM_UID_MAX} keep-state",
                             hide=True, timeout=10
                         )
                         base_rule += 10
