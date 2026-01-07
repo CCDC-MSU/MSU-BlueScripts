@@ -38,9 +38,9 @@ class BashScriptHardeningModule(HardeningModule):
         
         # Create directories
         commands.append(HardeningCommand(
-            command="mkdir -p /tmp/ccdc_scripts /root/hardening-logs && chmod 755 /tmp/ccdc_scripts",
+            command="mkdir -p /tmp/ccdc_scripts /root/logs/hardening-scripts && chmod 755 /tmp/ccdc_scripts",
             description="Create script staging and log directories",
-            check_command="test -d /tmp/ccdc_scripts && test -d /root/hardening-logs && echo exists",
+            check_command="test -d /tmp/ccdc_scripts && test -d /root/logs/hardening-scripts && echo exists",
             requires_sudo=True
         ))
         
@@ -54,7 +54,7 @@ class BashScriptHardeningModule(HardeningModule):
                 
             script_name = script_path.name
             remote_path = f"/tmp/ccdc_scripts/{script_name}"
-            log_path = f"/root/hardening-logs/{script_name}.log"
+            log_path = f"/root/logs/hardening-scripts/{script_name}.log"
             
             # Upload script command
             commands.append(self._create_upload_command(script_path, remote_path))

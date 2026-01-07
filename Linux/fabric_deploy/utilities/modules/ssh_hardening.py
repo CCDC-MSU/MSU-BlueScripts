@@ -74,15 +74,35 @@ class SSHHardeningModule(HardeningModule):
         return regular | super_users | do_not_change
     
     def _get_trapped_users(self) -> List[str]:
-        """Get the 2 longest usernames from non-allowed users (likely not system accounts)"""
+        """Get 1 user for honeypot trapping, prioritizing users with SSH keys"""
         current_valid_users = {
             user.username for user in self.server_info.users if user.valid_shell
         }
         non_allowed = current_valid_users - self.allowed_users
-        # Sort by length (descending) then alphabetically, and take the top 2
-        sorted_users = sorted(non_allowed, key=lambda u: (-len(u), u))
-        trapped = sorted_users[:2]
-        logger.info(f"Selected {len(trapped)} users for SSH honeypot trapping: {','.join(trapped)}")
+
+        # Get full user objects for non-allowed users
+        non_allowed_users = [
+            user for user in self.server_info.users
+            if user.username in non_allowed
+        ]
+
+        # First, try to find users with SSH keys
+        users_with_keys = [u for u in non_allowed_users if u.had_key]
+
+        if users_with_keys:
+            # Prioritize users with keys, sort by length (descending) as tiebreaker
+            sorted_users = sorted(users_with_keys, key=lambda u: (-len(u.username), u.username))
+            trapped = [sorted_users[0].username]
+            logger.info(f"Selected user with SSH key for honeypot trapping: {trapped[0]}")
+        else:
+            # Fall back to longest username
+            sorted_users = sorted(non_allowed, key=lambda u: (-len(u), u))
+            trapped = sorted_users[:1] if sorted_users else []
+            if trapped:
+                logger.info(f"Selected user (no keys found) for honeypot trapping: {trapped[0]}")
+            else:
+                logger.info("No suitable users found for honeypot trapping")
+
         return trapped
     
     def _generate_ssh_config(self) -> str:
@@ -143,7 +163,15 @@ AllowUsers {allowed_users_str}
 
     def get_commands(self) -> List[HardeningCommand]:
         commands = []
-        
+
+        # Deploy honeypot shell if there are trapped users
+        if self.trapped_users:
+            commands.append(PythonAction(
+                function=self._deploy_honeypot_shell,
+                description="Deploy honeypot shell to /bin/honeypot",
+                requires_sudo=True
+            ))
+
         # Create backup with timestamp and store backup path
         backup_file = f"/etc/ssh/sshd_config.fabric.backup"
         
@@ -290,6 +318,105 @@ AllowUsers {allowed_users_str}
                 success=False,
                 command="append_trap_sshd",
                 description="Prepend hardening configuration to sshd_config",
+                output="",
+                error=str(e)
+            )
+
+    def _deploy_honeypot_shell(self, conn, server_info):
+        """Deploy the honeypot shell script to /bin/honeypot and configure it"""
+        try:
+            # Get the path to the honeypot script
+            honeypot_script_path = os.path.join(
+                os.path.dirname(__file__),
+                "../../scripts/helpers/blue-sweet-tooth.sh"
+            )
+
+            # Check if the script exists locally
+            if not os.path.exists(honeypot_script_path):
+                return HardeningResult(
+                    success=False,
+                    command="deploy_honeypot",
+                    description="Deploy honeypot shell",
+                    output="",
+                    error=f"Honeypot script not found at {honeypot_script_path}"
+                )
+
+            # Read the script content
+            with open(honeypot_script_path, 'r') as f:
+                script_content = f.read()
+
+            # Escape for shell
+            escaped_content = script_content.replace("'", "'\"'\"'")
+
+            # Upload script to /bin/honeypot
+            write_result = conn.sudo(
+                f"printf '%s' '{escaped_content}' > /bin/honeypot",
+                hide=True,
+                warn=True
+            )
+
+            if not write_result.ok:
+                return HardeningResult(
+                    success=False,
+                    command="deploy_honeypot",
+                    description="Write honeypot script to /bin/honeypot",
+                    output="",
+                    error=f"Failed to write honeypot script: {write_result.stderr}"
+                )
+
+            # Make it executable
+            chmod_result = conn.sudo("chmod +x /bin/honeypot", hide=True, warn=True)
+            if not chmod_result.ok:
+                return HardeningResult(
+                    success=False,
+                    command="deploy_honeypot",
+                    description="Make honeypot executable",
+                    output="",
+                    error=f"Failed to chmod honeypot: {chmod_result.stderr}"
+                )
+
+            # Add to /etc/shells if not already present
+            check_shells_result = conn.sudo(
+                "grep -Fxq '/bin/honeypot' /etc/shells || echo '/bin/honeypot' >> /etc/shells",
+                hide=True,
+                warn=True
+            )
+
+            if not check_shells_result.ok:
+                logger.warning("Failed to add honeypot to /etc/shells, but continuing")
+
+            # Create log file in /var/log with proper permissions (world-writable for honeypot)
+            varlog_result = conn.sudo(
+                "touch /var/log/honeypot.log && chmod 666 /var/log/honeypot.log",
+                hide=True,
+                warn=True
+            )
+            if not varlog_result.ok:
+                logger.warning("Failed to create /var/log/honeypot.log, but continuing")
+
+            # Create /root/logs directory (world-readable/executable so symlink can be followed)
+            # and symlink to /var/log/honeypot.log
+            symlink_result = conn.sudo(
+                "mkdir -p /root/logs && chmod 755 /root/logs && ln -sf /var/log/honeypot.log /root/logs/honeypot.log",
+                hide=True,
+                warn=True
+            )
+            if not symlink_result.ok:
+                logger.warning("Failed to create symlink for honeypot log, but continuing")
+
+            return HardeningResult(
+                success=True,
+                command="deploy_honeypot",
+                description="Deploy honeypot shell to /bin/honeypot",
+                output=f"Successfully deployed honeypot shell for trapped users: {', '.join(self.trapped_users)}"
+            )
+
+        except Exception as e:
+            logger.error(f"Error deploying honeypot shell: {e}")
+            return HardeningResult(
+                success=False,
+                command="deploy_honeypot",
+                description="Deploy honeypot shell",
                 output="",
                 error=str(e)
             )
