@@ -71,8 +71,8 @@ Python classes that generate platform-specific shell commands to apply security 
     - Configures `rsyslog` / `syslog` / `journald`.
     - Sets up `auditd` with CCDC-specific rules (monitoring `/etc/passwd`, execve, etc.).
     - Configures `logrotate`.
-6.  **Bash Scripts** (`bash_scripts.py`):
-    - Wrapper to deploy and run raw shell scripts from `scripts/all/`.
+6.  **Shell Scripts** (`shell_scripts.py`):
+    - Wrapper to deploy and run raw shell scripts (sh/POSIX compatible) from `scripts/all/`.
 
 ### 3.3 Scripts (`scripts/all/`)
 Standalone shell scripts for tasks that don't fit the module model or need to be run raw.

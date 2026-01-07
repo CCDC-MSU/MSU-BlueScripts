@@ -5,3 +5,5 @@ logs
 .scratch
 keys/*
 .claude
+ansible/inventory/hosts.yaml
+ansible/roles/logging_setup/templates/*

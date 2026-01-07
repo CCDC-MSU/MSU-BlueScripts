@@ -9,37 +9,21 @@ CCDC Hardening Deployment Framework - An automated SSH-based system hardening to
 ## Commands
 
 ```bash
-# Activate environment (required first)
-source activate.sh
-
 # Primary workflow - runs full hardening pipeline on all hosts
-fab harden
-
-# Discovery only (no changes)
-fab discover-all
-fab discover --host=192.168.1.10 --user=root --password=pass
+uv run fab harden
 
 # Test a specific module
-fab test-module --module=ssh_hardening --live
-# Available: user_hardening, ssh_hardening, firewall_hardening, package_installer, logging_setup
+uv run fab test-module --module=ssh_hardening --live
+# Available: user_hardening, ssh_hardening, firewall_hardening, logging_setup
 
 # Run a custom script on all hosts
-fab run-script --file=scripts/all/my-script.sh
-
-# List available hardening modules
-fab list-modules
-
-# SSH recovery/reset
-fab reset-ssh
-
-# Setup test environments
-fab setup-test-env
+uv run fab run-script --file=scripts/all/my-script.sh
 ```
 
 ## Architecture
 
 ```
-fabfile.py              # Entry point - imports and exposes all tasks
+uv run fabfile.py              # Entry point - imports and exposes all tasks
 tasks/                  # Fabric task definitions
   discovery.py          # System profiling commands
   hardening.py          # Main hardening orchestration
