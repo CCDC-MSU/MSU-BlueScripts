@@ -60,10 +60,19 @@ fab harden
 2.  **Snapshot**: Backs up critical files to `/root/pre-hardening-snapshot/`.
 3.  **Root Persistence**: Injects `keys/test-root-key.pub` into root's `authorized_keys`.
 4.  **User Hardening**: Rotates passwords, locks invalid users, fixes sudoers.
-5.  **Firewall & Lockdown**: Installs firewall, blocks inbound traffic, runs `lockdown.sh`.
+5.  **Firewall Lockdown**: Installs firewall, blocks inbound traffic (strict mode).
 6.  **SSH Hardening**: Secures `sshd_config`, enables Dead Man's Switch, sets up Honeypots.
-7.  **Script Deployment**: Uploads helper tools (`diff-changes.sh`, etc.) to `/root/tools`.
-8.  **Logging**: Configures persistent logging (auditd/rsyslog).
+7.  **Custom Scripts**: Executes shell scripts configured in `config.yaml` (default: 7 scripts).
+8. **Reboot**: Reboots system to clear memory-resident malware.
+9. **Post-Reboot**: Rotates passwords again, opens internet for root (HTTP/HTTPS/DNS/NTP).
+10. **Logging Setup**: Configures auditd, rsyslog, logrotate via Ansible.
+11. **Final Lockdown**: Returns firewall to strict mode, final snapshot.
+
+**Scripts Automatically Executed:**
+- **Always**: `pre-hardening-snapshot.sh` (steps 1, 15), `archive_ssh_keys.sh` (step 3)
+- **Step 7 (default)**: fix-file-permissions, check-go-binaries, environment-variables-scanner, systemd-hunting, user-profiles-compiler, search-pii (configurable in `config.yaml`)
+- **Manual only**: archive_cronjobs, pam_audit, secure-php (run separately if needed)
+
 
 ### Viewing Results
 *   **Reports**: `reports/<host>/<timestamp>.md` (High-level summary of what changed).
@@ -97,7 +106,7 @@ fab discover-all
 
 *   **`fabfile.py`**: Entry point.
 *   **`utilities/modules/`**: detailed Python logic for each hardening step.
-*   **`scripts/all/`**: Bash scripts for raw system interaction (`lockdown.sh`, `archive_cronjobs.sh`).
+*   **`scripts/all/`**: POSIX shell scripts for raw system interaction (`lockdown.sh`, `archive_cronjobs.sh`).
 
 ## Contributing
 
