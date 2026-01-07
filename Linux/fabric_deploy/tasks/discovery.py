@@ -5,6 +5,7 @@ import getpass
 import os
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import paramiko
 
 from utilities.models import ServerCredentials, ServerInfo
 from utilities.discovery import SystemDiscovery
@@ -61,6 +62,8 @@ def discover(c, host, user=None, key_file=None, password=None):
     
     try:
         with Connection(host, user=user, config=config, connect_kwargs=connect_kwargs) as conn:
+            # Ignore host key changes - critical for fault tolerance
+            conn.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             credentials = ServerCredentials(host=host, user=user, password=password, key_file=key_file)
             discovery = SystemDiscovery(conn, credentials)
             server_info = discovery.discover_system()
@@ -144,6 +147,8 @@ def discover_all(c, hosts_file='hosts.txt'):
                 # Run discovery
                 with Connection(server_creds.host, user=server_creds.user,
                               config=config, connect_kwargs=connect_kwargs) as conn:
+                    # Ignore host key changes - critical for fault tolerance
+                    conn.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
                     discovery = SystemDiscovery(conn, server_creds)
                     server_info = discovery.discover_system()
 
