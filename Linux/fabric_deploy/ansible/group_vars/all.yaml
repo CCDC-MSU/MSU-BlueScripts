@@ -1,0 +1,18 @@
+# Auto-generated from users.json
+# Last synced: 2026-01-08T00:33:31.251182
+---
+ccdc_do_not_change_users:
+  black-team-acc: do not change password
+  scan-agent: added by the hardenig script
+ccdc_regular_users:
+  alex: ''
+  blair: ''
+  casey: ''
+  devon: ''
+  jordan: ''
+  morgan: ''
+  quinn: ''
+ccdc_super_users:
+  root: __PER_HOST__
+  sam: ''
+  taylor: ''
