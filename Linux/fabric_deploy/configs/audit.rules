@@ -44,15 +44,19 @@
 -a always,exclude -F msgtype=AVC
 -a always,exclude -F msgtype=CRYPTO_KEY_USER
 -a always,exclude -F msgtype=CWD
--a exit,never -F arch=b64 -S all -F exe=/usr/bin/vmtoolsd
+## VMware-specific exclusions (commented out - -F exe= fails if file doesn't exist)
+## Uncomment these if running on VMware virtual machines with vmtoolsd installed
+#-a exit,never -F arch=b64 -S all -F exe=/usr/bin/vmtoolsd
+#-a never,exit -F arch=b32 -S fork -F success=0 -F path=/usr/lib/vmware-tools -F subj_type=initrc_t -F exit=-2
+#-a never,exit -F arch=b64 -S fork -F success=0 -F path=/usr/lib/vmware-tools -F subj_type=initrc_t -F exit=-2
 -a never,exit -F arch=b32 -F dir=/dev/shm -k sharedmemaccess
 -a never,exit -F arch=b32 -F dir=/var/lock/lvm -k locklvm
--a never,exit -F arch=b32 -F path=/opt/filebeat -k filebeat
--a never,exit -F arch=b32 -S adjtimex -F auid=unset -F uid=chrony -F subj_type=chronyd_t
--a never,exit -F arch=b32 -S fork -F success=0 -F path=/usr/lib/vmware-tools -F subj_type=initrc_t -F exit=-2
+## Filebeat exclusion (commented out - path may not exist)
+#-a never,exit -F arch=b32 -F path=/opt/filebeat -k filebeat
+## Chrony exclusion (commented out - chrony user may not exist)
+#-a never,exit -F arch=b32 -S adjtimex -F auid=unset -F uid=chrony -F subj_type=chronyd_t
 -a never,exit -F arch=b64 -F dir=/dev/shm -k sharedmemaccess
 -a never,exit -F arch=b64 -F dir=/var/lock/lvm -k locklvm
--a never,exit -F arch=b64 -S fork -F success=0 -F path=/usr/lib/vmware-tools -F subj_type=initrc_t -F exit=-2
 -a never,exit -F subj_type=crond_t
 -a never,filesystem -F fstype=debugfs
 -a never,filesystem -F fstype=tracefs

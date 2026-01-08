@@ -75,6 +75,18 @@ class LoggingHardeningModule(HardeningModule):
             f"pgrep -x {service} >/dev/null 2>&1)"
         )
 
+    def _get_service_start_or_restart_cmd(self, service: str) -> str:
+        """Start a service if stopped, restart if already running"""
+        # Try start first (works for stopped services), then restart (works for running services)
+        return (
+            f"(systemctl start {service} 2>/dev/null || "
+            f"rc-service {service} start 2>/dev/null || "
+            f"service {service} start 2>/dev/null || "
+            f"/etc/init.d/{service} start 2>/dev/null || "
+            f"echo 'Could not start {service}') && "
+            f"echo '{service} started/restarted'"
+        )
+
     def _get_ansible_hostname_for_ip(self, ip: str) -> str:
         """Look up the Ansible inventory hostname for a given IP address"""
         import yaml
@@ -470,9 +482,10 @@ class LoggingHardeningModule(HardeningModule):
             requires_sudo=True
         ))
 
+        # Start auditd if not running, restart if already running
         commands.append(HardeningCommand(
-            command=f"{self._get_service_is_running_cmd('auditd')} && {self._get_service_restart_cmd('auditd')} || echo 'auditd not running, skipping restart'",
-            description="Restart auditd service",
+            command=self._get_service_start_or_restart_cmd('auditd'),
+            description="Start or restart auditd service",
             requires_sudo=True
         ))
         
