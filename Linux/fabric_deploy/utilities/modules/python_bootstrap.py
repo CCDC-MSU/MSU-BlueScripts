@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import List
 from datetime import datetime
 from .base import HardeningModule, HardeningCommand, HardeningResult, PythonAction
+from ..operator_decision import OperatorDecisionManager
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,7 @@ class PythonBootstrapModule(HardeningModule):
     def _verify_uv_dependencies(self, conn, server_info) -> HardeningResult:
         """
         Verify all required utilities for uv installer are present.
-        Returns failure with detailed message if any are missing.
+        If dependencies are missing, request operator decision.
         """
         missing = []
         warnings = []
@@ -127,13 +128,44 @@ class PythonBootstrapModule(HardeningModule):
             # This might mean missing ca-certificates OR no network
             warnings.append("SSL verification failed - may need ca-certificates or network access")
 
+        # If dependencies are missing, request operator decision
         if missing:
-            return HardeningResult(
-                success=False,
-                command="verify_uv_deps",
-                description="Verify uv installer dependencies",
-                error=f"Missing required utilities: {', '.join(missing)}. Install these before proceeding."
+            logger.warning(f"Missing dependencies for {conn.host}: {', '.join(missing)}")
+
+            decision_manager = OperatorDecisionManager(conn.host, "python_bootstrap")
+
+            options = {
+                "skip": f"Skip Python 3.12 installation - Let Ansible auto-discover system Python (missing: {', '.join(missing)})",
+                "retry": "I've fixed the dependencies - Re-check and continue with Python 3.12 installation"
+            }
+
+            decision = decision_manager.request_decision(
+                issue=f"Missing required utilities: {', '.join(missing)}",
+                options=options,
+                timeout=300  # 5 minutes
             )
+
+            if decision == "skip":
+                logger.info(f"Operator chose to skip Python 3.12 installation for {conn.host}")
+                return HardeningResult(
+                    success=False,
+                    command="verify_uv_deps",
+                    description="Verify uv installer dependencies",
+                    error=f"Skipped by operator - missing: {', '.join(missing)}"
+                )
+            elif decision == "retry":
+                logger.info(f"Operator chose to retry - re-checking dependencies for {conn.host}")
+                # Recursively call this function to re-check
+                return self._verify_uv_dependencies(conn, server_info)
+            else:
+                # Timeout or no decision
+                logger.error(f"No operator decision received for {conn.host} - defaulting to skip")
+                return HardeningResult(
+                    success=False,
+                    command="verify_uv_deps",
+                    description="Verify uv installer dependencies",
+                    error=f"Operator decision timeout - missing: {', '.join(missing)}"
+                )
 
         output = "All dependencies present"
         if warnings:
