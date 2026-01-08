@@ -1,12 +1,17 @@
 import logging
-from typing import List
+
 from .models import SudoersInfo
 
 logger = logging.getLogger(__name__)
 
 
 class UserManager:
-    def __init__(self, available_commands: list[str], groups: list[str], sudoers_info: SudoersInfo):
+    def __init__(
+        self,
+        available_commands: list[str],
+        groups: list[str],
+        sudoers_info: SudoersInfo,
+    ):
         self.available_commands = list(available_commands or [])
         self.available_groups = list(groups or [])
         self.sudoers_groups: list[str] = sudoers_info.sudoer_group_all
@@ -43,20 +48,18 @@ class UserManager:
 u={u}
 
 # Create user only if missing
-if dscl . -read "/Users/$u" >/dev/null 2>&1; then
-  exit 0
+if ! dscl . -read "/Users/$u" >/dev/null 2>&1; then
+  max_uid="$(dscl . -list /Users UniqueID 2>/dev/null | awk '{{print $2}}' | awk 'BEGIN{{m=500}} {{if($1>m)m=$1}} END{{print m}}')"
+  new_uid="$((max_uid + 1))"
+  dscl . -create "/Users/$u"
+  dscl . -create "/Users/$u" UserShell "/bin/bash"
+  dscl . -create "/Users/$u" RealName "$u"
+  dscl . -create "/Users/$u" UniqueID "$new_uid"
+  dscl . -create "/Users/$u" PrimaryGroupID 20
+  dscl . -create "/Users/$u" NFSHomeDirectory "/Users/$u"
+  mkdir -p "/Users/$u"
+  chown "$u":staff "/Users/$u" || true
 fi
-
-max_uid="$(dscl . -list /Users UniqueID 2>/dev/null | awk '{{print $2}}' | awk 'BEGIN{{m=500}} {{if($1>m)m=$1}} END{{print m}}')"
-new_uid="$((max_uid + 1))"
-dscl . -create "/Users/$u"
-dscl . -create "/Users/$u" UserShell "/bin/bash"
-dscl . -create "/Users/$u" RealName "$u"
-dscl . -create "/Users/$u" UniqueID "$new_uid"
-dscl . -create "/Users/$u" PrimaryGroupID 20
-dscl . -create "/Users/$u" NFSHomeDirectory "/Users/$u"
-mkdir -p "/Users/$u"
-chown "$u":staff "/Users/$u" || true
 """
 
         # BSD
@@ -65,11 +68,9 @@ chown "$u":staff "/Users/$u" || true
             return f"""set -eu
 u={u}
 
-if id "$u" >/dev/null 2>&1; then
-  exit 0
+if ! id "$u" >/dev/null 2>&1; then
+  pw useradd -n "$u" -m -s /bin/sh
 fi
-
-pw useradd -n "$u" -m -s /bin/sh
 """
 
         # Linux
@@ -77,16 +78,18 @@ pw useradd -n "$u" -m -s /bin/sh
             self._log_choice(f"add_user: {u}", "useradd")
             return f"""set -eu
 u={u}
-id -u "$u" >/dev/null 2>&1 && exit 0
-useradd -m -s /bin/sh "$u"
+if ! id -u "$u" >/dev/null 2>&1; then
+  useradd -m -s /bin/sh "$u"
+fi
 """
-        
+
         if self._has("adduser"):
             self._log_choice(f"add_user: {u}", "adduser")
             return f"""set -eu
 u={u}
-id -u "$u" >/dev/null 2>&1 && exit 0
-adduser -D "$u" 2>/dev/null || adduser --disabled-password --gecos "" "$u"
+if ! id -u "$u" >/dev/null 2>&1; then
+  adduser -D "$u" 2>/dev/null || adduser --disabled-password --gecos "" "$u"
+fi
 """
 
         self._log_choice(f"add_user: {u}", "no supported tool")
@@ -145,7 +148,7 @@ fi
 
 printf '%s:%s\\n' "$u" "$p" | chpasswd
 """
-        
+
         if self._has("passwd"):
             self._log_choice(f"set_user_password: {u}", "passwd")
             return f"""set -eu
@@ -177,16 +180,13 @@ exit 1
             return f"""set -eu
 g={g}
 
-if dscl . -read "/Groups/$g" >/dev/null 2>&1; then
-  exit 0
+if ! dscl . -read "/Groups/$g" >/dev/null 2>&1; then
+  max_gid="$(dscl . -list /Groups PrimaryGroupID 2>/dev/null | awk '{{print $2}}' | awk 'BEGIN{{m=500}} {{if($1>m)m=$1}} END{{print m}}')"
+  new_gid="$((max_gid + 1))"
+  dscl . -create "/Groups/$g"
+  dscl . -create "/Groups/$g" PrimaryGroupID "$new_gid"
 fi
-
-max_gid="$(dscl . -list /Groups PrimaryGroupID 2>/dev/null | awk '{{print $2}}' | awk 'BEGIN{{m=500}} {{if($1>m)m=$1}} END{{print m}}')"
-new_gid="$((max_gid + 1))"
-dscl . -create "/Groups/$g"
-dscl . -create "/Groups/$g" PrimaryGroupID "$new_gid"
 """
-
         # BSD
         if self._has("pw"):
             self._log_choice(f"add_group: {g}", "pw")
@@ -194,14 +194,15 @@ dscl . -create "/Groups/$g" PrimaryGroupID "$new_gid"
 g={g}
 
 if command -v getent >/dev/null 2>&1; then
-  getent group "$g" >/dev/null 2>&1 && exit 0
+  if ! getent group "$g" >/dev/null 2>&1; then
+    pw groupadd -n "$g"
+  fi
 else
-  grep -q "^$g:" /etc/group 2>/dev/null && exit 0
+  if ! grep -q "^$g:" /etc/group 2>/dev/null; then
+    pw groupadd -n "$g"
+  fi
 fi
-
-pw groupadd -n "$g"
 """
-
         # Linux
         if self._has("groupadd"):
             self._log_choice(f"add_group: {g}", "groupadd")
@@ -209,26 +210,29 @@ pw groupadd -n "$g"
 g={g}
 
 if command -v getent >/dev/null 2>&1; then
-  getent group "$g" >/dev/null 2>&1 && exit 0
+  if ! getent group "$g" >/dev/null 2>&1; then
+    groupadd "$g"
+  fi
 else
-  grep -q "^$g:" /etc/group 2>/dev/null && exit 0
+  if ! grep -q "^$g:" /etc/group 2>/dev/null; then
+    groupadd "$g"
+  fi
 fi
-
-groupadd "$g"
 """
-        
         if self._has("addgroup"):
             self._log_choice(f"add_group: {g}", "addgroup")
             return f"""set -eu
 g={g}
 
 if command -v getent >/dev/null 2>&1; then
-  getent group "$g" >/dev/null 2>&1 && exit 0
+  if ! getent group "$g" >/dev/null 2>&1; then
+    addgroup "$g"
+  fi
 else
-  grep -q "^$g:" /etc/group 2>/dev/null && exit 0
+  if ! grep -q "^$g:" /etc/group 2>/dev/null; then
+    addgroup "$g"
+  fi
 fi
-
-addgroup "$g"
 """
 
         self._log_choice(f"add_group: {g}", "no supported tool")
@@ -245,8 +249,10 @@ exit 1
         # macOS - admin group is built-in, no need to configure
         if self._has("dscl") or self._has("dseditgroup"):
             if groupname == "admin":
-                self._log_choice(f"add_group_to_sudoers: {g}", "macos admin group (noop)")
-                return f"""set -eu
+                self._log_choice(
+                    f"add_group_to_sudoers: {g}", "macos admin group (noop)"
+                )
+                return """set -eu
 # macOS admin group already has sudo by default
 :
 """
@@ -338,19 +344,12 @@ fi
 u={u}
 g={g}
 
-if ! dscl . -read "/Users/$u" >/dev/null 2>&1; then
-  echo "User $u does not exist" >&2
-  exit 1
+if dscl . -read "/Users/$u" >/dev/null 2>&1; then
+  if dscl . -read "/Groups/$g" >/dev/null 2>&1; then
+    dseditgroup -o edit -a "$u" -t user "$g"
+  fi
 fi
-
-if ! dscl . -read "/Groups/$g" >/dev/null 2>&1; then
-  echo "Group $g does not exist" >&2
-  exit 1
-fi
-
-dseditgroup -o edit -a "$u" -t user "$g"
 """
-
         # BSD
         if self._has("pw"):
             self._log_choice(f"add_user_to_group: {u}", "pw")
@@ -617,16 +616,14 @@ done
             return f"""set -eu
 u={u}
 
-if ! dscl . -read "/Users/$u" >/dev/null 2>&1; then
-  exit 0
+if dscl . -read "/Users/$u" >/dev/null 2>&1; then
+  homedir="$(dscl . -read "/Users/$u" NFSHomeDirectory 2>/dev/null | awk '{{print $2}}' || true)"
+  dscl . -delete "/Users/$u" || true
+  if [ -n "${{homedir:-}}" ] && [ -d "$homedir" ]; then 
+    rm -rf "$homedir"
+  fi
 fi
-
-homedir="$(dscl . -read "/Users/$u" NFSHomeDirectory 2>/dev/null | awk '{{print $2}}' || true)"
-dscl . -delete "/Users/$u" || true
-if [ -n "${{homedir:-}}" ] && [ -d "$homedir" ]; then 
-  rm -rf "$homedir"
-fi
-    """
+"""
 
         # BSD
         if self._has("pw"):
@@ -634,13 +631,10 @@ fi
             return f"""set -eu
 u={u}
 
-if ! id "$u" >/dev/null 2>&1; then
-  echo "user is already missing!!"
-  exit 0
+if id "$u" >/dev/null 2>&1; then
+  pw userdel -n "$u" -r || pw userdel -n "$u" || true
 fi
-
-pw userdel -n "$u" -r || pw userdel -n "$u" || true
-    """
+"""
 
         # Linux
         if self._has("userdel"):
@@ -648,26 +642,20 @@ pw userdel -n "$u" -r || pw userdel -n "$u" || true
             return f"""set -eu
 u={u}
 
-if ! id -u "$u" >/dev/null 2>&1; then
-  echo "user is already missing!!"
-  exit 0
+if id -u "$u" >/dev/null 2>&1; then
+  userdel -r "$u" 2>/dev/null || userdel "$u"
 fi
-
-userdel -r "$u" 2>/dev/null || userdel "$u"
-    """
+"""
 
         if self._has("deluser"):
             self._log_choice(f"remove_user: {u}", "deluser")
             return f"""set -eu
 u={u}
 
-if ! id -u "$u" >/dev/null 2>&1; then
-  echo "user is already missing!!"
-  exit 0
+if id -u "$u" >/dev/null 2>&1; then
+  deluser --remove-home "$u" 2>/dev/null || deluser "$u"
 fi
-
-deluser --remove-home "$u" 2>/dev/null || deluser "$u"
-    """
+"""
 
         self._log_choice(f"remove_user: {u}", "no supported tool")
         return f"""set -eu
@@ -686,11 +674,9 @@ exit 1
             return f"""set -eu
 u={u}
 
-if ! dscl . -read "/Users/$u" >/dev/null 2>&1; then
-  exit 0
+if dscl . -read "/Users/$u" >/dev/null 2>&1; then
+  dscl . -passwd "/Users/$u" '*' >/dev/null 2>&1 || true
 fi
-
-dscl . -passwd "/Users/$u" '*' >/dev/null 2>&1 || true
 """
 
         # BSD
@@ -699,11 +685,9 @@ dscl . -passwd "/Users/$u" '*' >/dev/null 2>&1 || true
             return f"""set -eu
 u={u}
 
-if ! id "$u" >/dev/null 2>&1; then
-  exit 0
+if id "$u" >/dev/null 2>&1; then
+  pw lock "$u" >/dev/null 2>&1 || true
 fi
-
-pw lock "$u" >/dev/null 2>&1 || true
 """
 
         # Linux
@@ -712,11 +696,9 @@ pw lock "$u" >/dev/null 2>&1 || true
             return f"""set -eu
 u={u}
 
-if ! id -u "$u" >/dev/null 2>&1; then
-  exit 0
+if id -u "$u" >/dev/null 2>&1; then
+  usermod -L "$u" >/dev/null 2>&1 || true
 fi
-
-usermod -L "$u" >/dev/null 2>&1 || true
 """
 
         if self._has("passwd"):
@@ -724,11 +706,9 @@ usermod -L "$u" >/dev/null 2>&1 || true
             return f"""set -eu
 u={u}
 
-if ! id -u "$u" >/dev/null 2>&1; then
-  exit 0
+if id -u "$u" >/dev/null 2>&1; then
+  passwd -l "$u" >/dev/null 2>&1 || true
 fi
-
-passwd -l "$u" >/dev/null 2>&1 || true
 """
 
         self._log_choice(f"lock_user: {u}", "no supported tool")
@@ -790,13 +770,13 @@ grep -E "^$g:" /etc/group 2>/dev/null | awk -F: '{{print $4}}' | tr ',' '\\n' | 
         elif self.sudoers_groups:
             grp = self.sudoers_groups[0]
         else:
-            grp = 'blue-sudoer'
+            grp = "blue-sudoer"
             add_grp = self.add_group(groupname=grp)
             make_sudoer = self.add_group_to_sudoers(groupname=grp)
             output_list.append(add_grp)
             output_list.append(make_sudoer)
 
-        self._log_choice(f"add_sudo_user", f"selected group={grp}")
+        self._log_choice("add_sudo_user", f"selected group={grp}")
         post_script = f"""set -eu
 
 # Add user
@@ -810,33 +790,32 @@ grep -E "^$g:" /etc/group 2>/dev/null | awk -F: '{{print $4}}' | tr ',' '\\n' | 
 """
         output_list.append(post_script)
         return output_list
-    
+
     def remove_user_from_sudoers(self, username: str) -> str:
         """Convenience: Remove user from all sudo-related groups and sudoers.d entries."""
         u = self._sh_quote(username)
-        self._log_choice(f"remove_user_from_sudoers: {u}", f"groups={self.sudoers_groups}")
-        
-        lines = [
-            "set -eu",
-            f"u={u}",
-            "",
-            "# Remove any sudoers.d drop-in files"
-        ]
-        
+        self._log_choice(
+            f"remove_user_from_sudoers: {u}", f"groups={self.sudoers_groups}"
+        )
+
+        lines = ["set -eu", f"u={u}", "", "# Remove any sudoers.d drop-in files"]
+
         # macOS and BSD may have multiple paths
         if self._has("dscl") or self._has("pw"):
-            lines.append('for d in /etc/sudoers.d /usr/local/etc/sudoers.d /private/etc/sudoers.d; do')
+            lines.append(
+                "for d in /etc/sudoers.d /usr/local/etc/sudoers.d /private/etc/sudoers.d; do"
+            )
             lines.append('  [ -d "$d" ] && rm -f "$d/$u" 2>/dev/null || true')
-            lines.append('done')
+            lines.append("done")
         else:
             lines.append('rm -f "/etc/sudoers.d/$u" 2>/dev/null || true')
-        
+
         lines.append("")
         lines.append("# Remove from common sudo groups")
-        
+
         # Remove from all known sudo groups
         for grp in self.sudoers_groups:
             lines.append(f"# Remove from {grp}")
             lines.append(self.remove_user_from_group(username, grp))
-        
+
         return "\n".join(lines)

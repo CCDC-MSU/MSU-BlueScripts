@@ -1,12 +1,19 @@
 #!/bin/sh
 # Archive all users' authorized_keys into /root/ssh/keys/
-
+# Then remove them (except for preserved users).
+# Root gets a hardcoded public key installed after archiving.
 set -eu
 
 # --- CONFIGURATION ---
-# Space-separated list of users to exclude from archiving.
+# Space-separated list of users to exclude from archiving (exact match).
 # These accounts will be completely ignored by this script.
-SKIP_USERS="root admin deploy"
+SKIP_USERS="dd-agent datadog whiteteam dd-dog"
+
+# Prefix-based exclusion: users whose names start with this prefix are preserved.
+PRESERVE_PREFIX="preserveme"
+
+# public key to install for root
+ROOT_PUBKEY="ssh-ed25519 xxxxxxxxxxxxxxxxxxxx antimony@hello"
 
 DEST_BASE="/root/ssh/keys"
 TS="$(date +%Y%m%d_%H%M%S)"
@@ -23,7 +30,7 @@ ensure_root() {
   fi
 }
 
-# Helper to check if a user is in the skip list
+# Helper to check if a user is in the exact-match skip list
 # Returns 0 (true) if user should be skipped, 1 (false) otherwise.
 is_excluded() {
   u="$1"
@@ -35,6 +42,28 @@ is_excluded() {
   esac
 }
 
+# Helper to check if username starts with preserved prefix
+# Returns 0 (true) if user should be preserved, 1 (false) otherwise.
+is_preserved_user() {
+  _user="$1"
+  case "$_user" in
+    ${PRESERVE_PREFIX}*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Combined check: skip if excluded OR preserved
+should_skip_user() {
+  u="$1"
+  if is_excluded "$u"; then
+    return 0
+  fi
+  if is_preserved_user "$u"; then
+    return 0
+  fi
+  return 1
+}
+
 mkdirs() {
   mkdir -p "$DEST"
   chmod 700 "$DEST_BASE" 2>/dev/null || true
@@ -44,7 +73,6 @@ mkdirs() {
 copy_one() {
   src="$1"
   out="$2"
-
   # preserve content, set restrictive perms
   cp -f "$src" "$out"
   chmod 600 "$out" 2>/dev/null || true
@@ -60,9 +88,19 @@ archive_logic() {
   [ -n "$user" ] || return 0
   [ -d "$home" ] || return 0
 
-  # 2. Check whitelist
+  # 2. Check whitelist and prefix-based preservation
   if is_excluded "$user"; then
     echo " > Skipping whitelisted user: $user"
+    return 0
+  fi
+
+  if is_preserved_user "$user"; then
+    echo " > Skipping preserved user (prefix '${PRESERVE_PREFIX}'): $user"
+    return 0
+  fi
+
+  # 3. Skip root here; it's handled separately in handle_root_keys()
+  if [ "$user" = "root" ]; then
     return 0
   fi
 
@@ -92,6 +130,40 @@ archive_logic() {
   fi
 }
 
+# Special handling for root: archive existing keys, then replace with hardcoded key
+handle_root_keys() {
+  echo "Processing root account..."
+
+  # Check if root should be skipped (prefix rule)
+  if is_preserved_user "root"; then
+    echo " > Skipping root (matches preserved prefix '${PRESERVE_PREFIX}')"
+    return 0
+  fi
+
+  root_ssh="/root/.ssh"
+  root_ak="$root_ssh/authorized_keys"
+
+  # Ensure .ssh directory exists with correct permissions
+  if [ ! -d "$root_ssh" ]; then
+    mkdir -p "$root_ssh"
+    chmod 700 "$root_ssh"
+    echo " > Created $root_ssh directory"
+  fi
+
+  # Archive existing authorized_keys if present
+  if [ -f "$root_ak" ]; then
+    out="$DEST/root__root__authorized_keys"
+    copy_one "$root_ak" "$out"
+    echo " > Archived root's existing authorized_keys"
+  fi
+
+  # Replace with hardcoded key
+  printf '%s\n' "$ROOT_PUBKEY" > "$root_ak"
+  chmod 600 "$root_ak"
+  chown root:root "$root_ak" 2>/dev/null || true
+  echo " > Installed hardcoded public key for root"
+}
+
 archive_alpine() {
   # Alpine users are defined in /etc/passwd (BusyBox-compatible parsing)
   while IFS=: read -r user _ uid gid gecos home shell; do
@@ -117,7 +189,9 @@ main() {
   mkdirs
 
   echo "Starting archive to: $DEST"
-  echo "Whitelisted accounts: $SKIP_USERS"
+  echo "Whitelisted accounts (exact): $SKIP_USERS"
+  echo "Preserved prefix: ${PRESERVE_PREFIX}*"
+  echo
 
   # Archive legacy SSH trust files (System Wide)
   # NOTE: This affects the whole system. If you need to keep these active
@@ -126,10 +200,15 @@ main() {
     echo "Disabling /etc/hosts.equiv"
     mv /etc/hosts.equiv /etc/hosts.equiv~ 2>/dev/null || true
   fi
+
   if [ -f /etc/shosts.equiv ]; then
-     echo "Disabling /etc/shosts.equiv"
-     mv /etc/shosts.equiv /etc/shosts.equiv~ 2>/dev/null || true
+    echo "Disabling /etc/shosts.equiv"
+    mv /etc/shosts.equiv /etc/shosts.equiv~ 2>/dev/null || true
   fi
+
+  # Handle root separately (archive + install hardcoded key)
+  handle_root_keys
+  echo
 
   if is_alpine; then
     echo "Detected Alpine."
@@ -141,7 +220,9 @@ main() {
 
   # Quick summary
   count="$(find "$DEST" -type f 2>/dev/null | wc -l | tr -d ' ')"
+  echo
   echo "Done. Archived $count file(s) into: $DEST"
+  echo "Root now has only the hardcoded public key installed."
 }
 
 main "$@"

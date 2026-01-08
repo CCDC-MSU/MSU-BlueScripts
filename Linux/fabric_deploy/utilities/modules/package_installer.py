@@ -3,221 +3,169 @@ Package installation module for CCDC framework
 Installs useful packages using the appropriate package manager
 """
 
-from typing import List, Dict, Set
-from .base import HardeningModule, HardeningCommand
-from ..discovery import OSFamily
+from .base import CommandAction, HardeningModule
 
 PACKAGE_MANAGER_INSTALL_CMD = {
     # Debian/Ubuntu
-    "apt":      "DEBIAN_FRONTEND=noninteractive apt-get install -y {}",
-
+    "apt": "DEBIAN_FRONTEND=noninteractive apt-get install -y {}",
     # RHEL/CentOS/Fedora
-    "yum":      "yum install -y {}",
-    "dnf":      "dnf install -y {}",
-
+    "yum": "yum install -y {}",
+    "dnf": "dnf install -y {}",
     # SUSE/openSUSE
-    "zypper":   "zypper --non-interactive install {}",
-
+    "zypper": "zypper --non-interactive install {}",
     # Arch
-    "pacman":   "pacman -S {} --noconfirm",
-
+    "pacman": "pacman -S {} --noconfirm",
     # Gentoo
-    "emerge":   "PAGER=cat emerge --ask=n --autounmask=y --autounmask-continue {}",
-
+    "emerge": "PAGER=cat emerge --ask=n --autounmask=y --autounmask-continue {}",
     # Alpine
-    "apk":      "apk add {}",
-
+    "apk": "apk add {}",
     # FreeBSD
-    "pkg":      "pkg install -y {}",
-
+    "pkg": "pkg install -y {}",
     # macOS (Homebrew)
-    "brew":     "brew install {}",
-
+    "brew": "brew install {}",
     # Snap
-    "snap":     "snap install {}",
-
+    "snap": "snap install {}",
     # Flatpak (assumes flathub remote is configured)
-    "flatpak":  "flatpak install -y --noninteractive flathub {}",
-
+    "flatpak": "flatpak install -y --noninteractive flathub {}",
     # Slackware
-    "sbopkg":   "sbopkg -B -e -i {}",
+    "sbopkg": "sbopkg -B -e -i {}",
     "slackpkg": "slackpkg -batch=on -default_answer=y install {}",
 }
 
 PACKAGE_MANAGER_UPDATE_CMD = {
     # Debian/Ubuntu
     # refresh + upgrade
-    "apt":      "DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y",
-
+    "apt": "DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y",
     # RHEL/CentOS (yum)
     # makecache/metadata refresh + upgrade
-    "yum":      "yum makecache -y && yum update -y",
-
+    "yum": "yum makecache -y && yum update -y",
     # Fedora/RHEL8+ (dnf)
-    "dnf":      "dnf makecache -y && dnf upgrade -y",
-
+    "dnf": "dnf makecache -y && dnf upgrade -y",
     # SUSE/openSUSE
     # refresh repos + update
-    "zypper":   "zypper --non-interactive refresh && zypper --non-interactive update",
-
+    "zypper": "zypper --non-interactive refresh && zypper --non-interactive update",
     # Arch
     # updating keys + sync db + upgrade system
-    "pacman":   "sudo pacman-key --init; sudo pacman-key --populate archlinux; sudo pacman -Sy --needed archlinux-keyring --noconfirm; pacman -Syu --ignore linux-firmware-nvidia --noconfirm",
-
+    "pacman": "sudo pacman-key --init; sudo pacman-key --populate archlinux; sudo pacman -Sy --needed archlinux-keyring --noconfirm; pacman -Syu --ignore linux-firmware-nvidia --noconfirm",
     # Gentoo
     # sync repo + update world (incl deps) + rebuild if needed
-    # "emerge":   "PAGER=cat emerge --sync && PAGER=cat FEATURES="getbinpkg" ACCEPT_KEYWORDS="~amd64" emerge -uD @world --ask=n", 
-    "emerge":   "true",  # can't afford 8 hour update times
-
+    # "emerge":   "PAGER=cat emerge --sync && PAGER=cat FEATURES="getbinpkg" ACCEPT_KEYWORDS="~amd64" emerge -uD @world --ask=n",
+    "emerge": "true",  # can't afford 8 hour update times
     # Alpine
     # refresh index + upgrade
-    "apk":      "apk update && apk upgrade",
-
+    "apk": "apk update && apk upgrade",
     # FreeBSD
     # refresh catalogs + upgrade packages
-    "pkg":      "pkg update -f && pkg upgrade -y",
-
+    "pkg": "pkg update -f && pkg upgrade -y",
     # macOS (Homebrew)
     # update formulae + upgrade installed
-    "brew":     "brew update && brew upgrade",
-
+    "brew": "brew update && brew upgrade",
     # Snap
     # snaps auto-refresh by default; explicit refresh updates all
-    "snap":     "snap refresh",
-
+    "snap": "snap refresh",
     # Flatpak
     # update installed flatpaks (usually no separate "refresh" needed)
-    "flatpak":  "flatpak update -y --noninteractive",
-
+    "flatpak": "flatpak update -y --noninteractive",
     # Slackware
     # update package lists + upgrade all
-    "sbopkg":   "sbopkg -r",
+    "sbopkg": "sbopkg -r",
     "slackpkg": "slackpkg -batch=on -default_answer=y update gpg && slackpkg -batch=on -default_answer=y update && slackpkg -batch=on -default_answer=y upgrade-all",
 }
 
 PACKAGE_MANAGER_UNINSTALL_CMD = {
     # Debian/Ubuntu
-    "apt":      "DEBIAN_FRONTEND=noninteractive apt-get remove -y {}",
-
+    "apt": "DEBIAN_FRONTEND=noninteractive apt-get remove -y {}",
     # RHEL/CentOS/Fedora
-    "yum":      "yum remove -y {}",
-    "dnf":      "dnf remove -y {}",
-
+    "yum": "yum remove -y {}",
+    "dnf": "dnf remove -y {}",
     # SUSE/openSUSE
-    "zypper":   "zypper --non-interactive remove {}",
-
+    "zypper": "zypper --non-interactive remove {}",
     # Arch
-    "pacman":   "pacman -R --noconfirm {}",
-
+    "pacman": "pacman -R --noconfirm {}",
     # Gentoo
-    "emerge":   "PAGER=cat emerge --unmerge --ask=n {}",
-
+    "emerge": "PAGER=cat emerge --unmerge --ask=n {}",
     # Alpine
-    "apk":      "apk del {}",
-
+    "apk": "apk del {}",
     # FreeBSD
-    "pkg":      "pkg delete -y {}",
-
+    "pkg": "pkg delete -y {}",
     # macOS (Homebrew)
-    "brew":     "brew uninstall {}",
-
+    "brew": "brew uninstall {}",
     # Snap
-    "snap":     "snap remove {}",
-
+    "snap": "snap remove {}",
     # Flatpak
-    "flatpak":  "flatpak uninstall -y --noninteractive {}",
-
+    "flatpak": "flatpak uninstall -y --noninteractive {}",
     # Slackware
-    "sbopkg":   "removepkg {}",
+    "sbopkg": "removepkg {}",
     "slackpkg": "slackpkg -batch=on -default_answer=y remove {}",
 }
 
 PACKAGE_MANAGER_REMOVE_UNUSED = {
     # Debian/Ubuntu
-    "apt":      "DEBIAN_FRONTEND=noninteractive apt-get autoremove -y && DEBIAN_FRONTEND=noninteractive apt-get autoclean -y",
-
+    "apt": "DEBIAN_FRONTEND=noninteractive apt-get autoremove -y && DEBIAN_FRONTEND=noninteractive apt-get autoclean -y",
     # RHEL/CentOS/Fedora
-    "yum":      "yum autoremove -y",
-    "dnf":      "dnf autoremove -y",
-
+    "yum": "yum autoremove -y",
+    "dnf": "dnf autoremove -y",
     # SUSE/openSUSE
     # Remove packages flagged as "unneeded" (best-effort; no exact apt autoremove equivalent)
-    "zypper":   r"""zypper packages --unneeded | awk -F'|' '/^i/ {gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2}' | xargs -r zypper --non-interactive rm --clean-deps || true""",
-
+    "zypper": r"""zypper packages --unneeded | awk -F'|' '/^i/ {gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2}' | xargs -r zypper --non-interactive rm --clean-deps || true""",
     # Arch
-    "pacman":   r"""orphans="$(pacman -Qtdq 2>/dev/null || true)"; [ -n "$orphans" ] && pacman -Rns --noconfirm $orphans || true""",
-
+    "pacman": r"""orphans="$(pacman -Qtdq 2>/dev/null || true)"; [ -n "$orphans" ] && pacman -Rns --noconfirm $orphans || true""",
     # Gentoo
-    "emerge":   "true",
-
+    "emerge": "true",
     # Alpine
-    "apk":      "echo 'not implimented'",
-
+    "apk": "echo 'not implimented'",
     # FreeBSD
-    "pkg":      "pkg autoremove -y",
-
+    "pkg": "pkg autoremove -y",
     # macOS (Homebrew)
-    "brew":     "brew autoremove && brew cleanup",
-
+    "brew": "brew autoremove && brew cleanup",
     # Snap
     # Remove disabled (old) revisions
-    "snap":     r"""LANG=C snap list --all | awk '/disabled/{print $1, $3}' | while read -r snapname revision; do snap remove "$snapname" --revision="$revision"; done""",
-
+    "snap": r"""LANG=C snap list --all | awk '/disabled/{print $1, $3}' | while read -r snapname revision; do snap remove "$snapname" --revision="$revision"; done""",
     # Flatpak
-    "flatpak":  "flatpak uninstall --unused -y --noninteractive",
-
+    "flatpak": "flatpak uninstall --unused -y --noninteractive",
     # Slackware
     # Removes packages not in the official Slackware set
-    "sbopkg":   "sbopkg -c",
+    "sbopkg": "sbopkg -c",
     "slackpkg": "slackpkg -batch=on -default_answer=y clean-system",
 }
 
 PACKAGE_MANAGER_VALIDATE_INSTALLED = {
     # Debian/Ubuntu
-    "apt":      "dpkg --verify",
-
+    "apt": "dpkg --verify",
     # RHEL/CentOS/Fedora
-    "yum":      "rpm -Va",
-    "dnf":      "rpm -Va",
-
+    "yum": "rpm -Va",
+    "dnf": "rpm -Va",
     # SUSE/openSUSE
-    "zypper":   "rpm -Va",
-
+    "zypper": "rpm -Va",
     # Arch
-    "pacman":   "pacman -Qkk",
-
+    "pacman": "pacman -Qkk",
     # Gentoo
-    "emerge":   "PAGER=cat qcheck",
-
+    "emerge": "PAGER=cat qcheck",
     # Alpine
-    "apk":      "apk verify -a",
-
+    "apk": "apk verify -a",
     # FreeBSD
-    "pkg":      "pkg check -a -s",
-
+    "pkg": "pkg check -a -s",
     # macOS (Homebrew)
-    "brew":     "brew doctor",
-
+    "brew": "brew doctor",
     # Snap
     # Best-effort: verify snapshot data integrity for all snaps (not a per-file package verify)
-    "snap":     r"""id="$(snap save | awk 'NR==2{print $1}')"; [ -n "$id" ] && snap check-snapshot "$id" """,
-
+    "snap": r"""id="$(snap save | awk 'NR==2{print $1}')"; [ -n "$id" ] && snap check-snapshot "$id" """,
     # Flatpak
-    "flatpak":  "flatpak repair --system -y --noninteractive || flatpak repair --user -y --noninteractive",
-
+    "flatpak": "flatpak repair --system -y --noninteractive || flatpak repair --user -y --noninteractive",
     # Slackware
     # Best-effort: re-download + reinstall (signature-checked) official packages
-    "sbopkg":   "echo 'package validation not available'",
+    "sbopkg": "echo 'package validation not available'",
     "slackpkg": r"""slackpkg -batch=on -default_answer=y reinstall '*'""",
 }
 
-class PackageInstallerModule(HardeningModule):
+
+class PackageManagementModule(HardeningModule):
     """Install useful packages for CCDC scenarios"""
 
     def __init__(self, connection, server_info, os_family):
         super().__init__(connection, server_info, os_family)
 
-        self.package_manager =  None
+        self.package_manager = None
         for pm in server_info.package_managers:
             if pm not in PACKAGE_MANAGER_INSTALL_CMD:
                 print(f"WARNING: Unsupported package manager: {self.package_manager!r}")
@@ -225,61 +173,80 @@ class PackageInstallerModule(HardeningModule):
                 self.package_manager = pm
                 print(f"Info: Using the package manager {self.package_manager}")
                 break
-        
-        if not self.package_manager:
-            print(f'ERROR: None of the detected package managers {server_info.package_managers} is supported!')
 
+        if not self.package_manager:
+            print(
+                f"ERROR: None of the detected package managers {server_info.package_managers} is supported!"
+            )
 
     def get_name(self) -> str:
         return "package_installer"
-    
-    def get_commands(self) -> List[HardeningCommand]:
-        if not self.package_manager:        # if a valid package manager is not found return
+
+    def get_commands(self) -> list[CommandAction]:
+        if not self.package_manager:  # if a valid package manager is not found return
             return []
 
-        packages_to_install = self._get_linux_package_mappings(self.package_manager)    # get the dict [common-name: package_manager-specific-name]
-        install_cmd_template = PACKAGE_MANAGER_INSTALL_CMD[self.package_manager]        # get the package manager command to install packages
-        
-        commands: list[HardeningCommand] = []
+        packages_to_install = self._get_linux_package_mappings(
+            self.package_manager
+        )  # get the dict [common-name: package_manager-specific-name]
+        install_cmd_template = PACKAGE_MANAGER_INSTALL_CMD[
+            self.package_manager
+        ]  # get the package manager command to install packages
+
+        commands: list[CommandAction] = []
 
         package_install_commands: list[str] = []
 
         for friendly_name in packages_to_install:
-            package_install_commands.append(install_cmd_template.format(packages_to_install[friendly_name]))
-        
+            package_install_commands.append(
+                install_cmd_template.format(packages_to_install[friendly_name])
+            )
+
         command_str = "\n".join(package_install_commands)
 
         # update existing packages
-        commands.append(HardeningCommand(
-            command=PACKAGE_MANAGER_UPDATE_CMD.get(self.package_manager, 'false'),
-            description="Updating and upgrading all the packages",
-            requires_sudo=True
-        ))
+        commands.append(
+            CommandAction(
+                command=PACKAGE_MANAGER_UPDATE_CMD.get(self.package_manager, "false"),
+                description="Updating and upgrading all the packages",
+                requires_sudo=True,
+            )
+        )
 
         # install packages
-        commands.append(HardeningCommand(
-            command=command_str,
-            description="install all required packages",
-            requires_sudo=True
-        ))
+        commands.append(
+            CommandAction(
+                command=command_str,
+                description="install all required packages",
+                requires_sudo=True,
+            )
+        )
 
         # remove unused
-        commands.append(HardeningCommand(
-            command=PACKAGE_MANAGER_REMOVE_UNUSED.get(self.package_manager,"false"),
-            description="removing unused packages",
-            requires_sudo=True
-        ))
+        commands.append(
+            CommandAction(
+                command=PACKAGE_MANAGER_REMOVE_UNUSED.get(
+                    self.package_manager, "false"
+                ),
+                description="removing unused packages",
+                requires_sudo=True,
+            )
+        )
 
         # verify installed
-        commands.append(HardeningCommand(
-            command=PACKAGE_MANAGER_VALIDATE_INSTALLED.get(self.package_manager,"false"),
-            description="Verify installed packages",
-            requires_sudo=True
-        ))
+        commands.append(
+            CommandAction(
+                command=PACKAGE_MANAGER_VALIDATE_INSTALLED.get(
+                    self.package_manager, "false"
+                ),
+                description="Verify installed packages",
+                requires_sudo=True,
+            )
+        )
 
         return commands
 
-    def _get_linux_package_mappings(self, package_manager) -> Dict[str, Dict[str, str]]:
+    def _get_linux_package_mappings(self, package_manager) -> dict[str, dict[str, str]]:
         """
         Map your generic package names (the keys) to the package name used by each
         package manager/distro ecosystem (the values).
@@ -295,164 +262,181 @@ class PackageInstallerModule(HardeningModule):
         """
         all_generic = [
             # security
-            "tcpdump", "ss", "rkhunter", "fail2ban", "aide",
+            "tcpdump",
+            "ss",
+            "rkhunter",
+            "fail2ban",
+            "aide",
             # monitoring
-            "rsyslog", "auditd",
+            "rsyslog",
+            "auditd",
             # networking
             "curl",
             # system
-            "vim", "nano", "less", "tree", "file", "which",
-            "psmisc", "procps", "util-linux", "coreutils",
+            "vim",
+            "nano",
+            "less",
+            "tree",
+            "file",
+            "which",
+            "psmisc",
+            "procps",
+            "util-linux",
+            "coreutils",
             # forensics
-            "strace", "strings",
+            "strace",
+            "strings",
             # development
             "python3",
         ]
 
-        def identity_map(overrides: Dict[str, str]) -> Dict[str, str]:
+        def identity_map(overrides: dict[str, str]) -> dict[str, str]:
             m = {k: k for k in all_generic}
             m.update(overrides)
             return m
 
         package_mappings = {
             # Debian/Ubuntu
-            "apt": identity_map({
-                "ss": "iproute2",
-                "which": "debianutils",
-                "strings": "binutils",
-                # auditd is already "auditd" on Debian/Ubuntu
-            }),
-
+            "apt": identity_map(
+                {
+                    "ss": "iproute2",
+                    "which": "debianutils",
+                    "strings": "binutils",
+                    # auditd is already "auditd" on Debian/Ubuntu
+                }
+            ),
             # RHEL/CentOS (yum, esp. 7.x)
-            "yum": identity_map({
-                "ss": "iproute",
-                "auditd": "audit",
-                "procps": "procps-ng",
-                "vim": "vim-enhanced",
-                "strings": "binutils",
-            }),
-
+            "yum": identity_map(
+                {
+                    "ss": "iproute",
+                    "auditd": "audit",
+                    "procps": "procps-ng",
+                    "vim": "vim-enhanced",
+                    "strings": "binutils",
+                }
+            ),
             # RHEL/CentOS 8+/Fedora (dnf)
-            "dnf": identity_map({
-                "ss": "iproute",
-                "auditd": "audit",
-                "procps": "procps-ng",
-                "vim": "vim-enhanced",
-                "strings": "binutils",
-                "firewall": "firewalld"
-            }),
-
+            "dnf": identity_map(
+                {
+                    "ss": "iproute",
+                    "auditd": "audit",
+                    "procps": "procps-ng",
+                    "vim": "vim-enhanced",
+                    "strings": "binutils",
+                    "firewall": "firewalld",
+                }
+            ),
             # openSUSE/SLES
-            "zypper": identity_map({
-                "ss": "iproute2",
-                "auditd": "audit",
-                "strings": "binutils"
-            }),
-
+            "zypper": identity_map(
+                {"ss": "iproute2", "auditd": "audit", "strings": "binutils"}
+            ),
             # Arch/Manjaro
-            "pacman": identity_map({
-                "ss": "iproute2",
-                "auditd": "audit",
-                "procps": "procps-ng",
-                "python3": "python",
-                "strings": "binutils",
-            }),
-
+            "pacman": identity_map(
+                {
+                    "ss": "iproute2",
+                    "auditd": "audit",
+                    "procps": "procps-ng",
+                    "python3": "python",
+                    "strings": "binutils",
+                }
+            ),
             # Gentoo (category/package atoms)
-            "emerge": identity_map({
-                "tcpdump":  "net-analyzer/tcpdump",
-                "ss":       "sys-apps/iproute2",
-                "rkhunter": "app-forensics/rkhunter",
-                "fail2ban": "net-analyzer/fail2ban",
-                "aide":     "app-forensics/aide",
-
-                "rsyslog":  "app-admin/rsyslog",
-                "auditd":   "sys-process/audit",
-
-                "curl":     "net-misc/curl",
-
-                "vim":      "app-editors/vim",
-                "nano":     "app-editors/nano",
-                "less":     "sys-apps/less",
-                "tree":     "app-text/tree",
-                "file":     "sys-apps/file",
-                "which":    "sys-apps/which",
-                "psmisc":   "sys-process/psmisc",
-                "procps":   "sys-process/procps",
-                "util-linux":"sys-apps/util-linux",
-                "coreutils":"sys-apps/coreutils",
-
-                "strace":   "dev-debug/strace",
-                "strings":  "sys-devel/binutils",
-
-                "python3":  "dev-lang/python",
-            }),
-
+            "emerge": identity_map(
+                {
+                    "tcpdump": "net-analyzer/tcpdump",
+                    "ss": "sys-apps/iproute2",
+                    "rkhunter": "app-forensics/rkhunter",
+                    "fail2ban": "net-analyzer/fail2ban",
+                    "aide": "app-forensics/aide",
+                    "rsyslog": "app-admin/rsyslog",
+                    "auditd": "sys-process/audit",
+                    "curl": "net-misc/curl",
+                    "vim": "app-editors/vim",
+                    "nano": "app-editors/nano",
+                    "less": "sys-apps/less",
+                    "tree": "app-text/tree",
+                    "file": "sys-apps/file",
+                    "which": "sys-apps/which",
+                    "psmisc": "sys-process/psmisc",
+                    "procps": "sys-process/procps",
+                    "util-linux": "sys-apps/util-linux",
+                    "coreutils": "sys-apps/coreutils",
+                    "strace": "dev-debug/strace",
+                    "strings": "sys-devel/binutils",
+                    "python3": "dev-lang/python",
+                }
+            ),
             # Alpine (apk)
-            "apk": identity_map({
-                "ss": "iproute2-ss",
-                "auditd": "audit",
-                "strings": "binutils",
-                "firewall": "nftables"
-            }),
-
+            "apk": identity_map(
+                {
+                    "ss": "iproute2-ss",
+                    "auditd": "audit",
+                    "strings": "binutils",
+                    "firewall": "nftables",
+                }
+            ),
             # FreeBSD (pkgng) — best-effort equivalents
-            "pkg": identity_map({
-                # many are available as ports; a few are base-system on FreeBSD
-                # (you may choose to skip installing those).
-                "fail2ban": "py311-fail2ban",  # commonly used on FreeBSD 14.x
-                "strings": "binutils",
-                "ss": "sockstat",              # closest built-in equivalent (no iproute2)
-                "auditd": "auditd",            # base-system service on FreeBSD
-                "python3": "python3",
-            }),
-
+            "pkg": identity_map(
+                {
+                    # many are available as ports; a few are base-system on FreeBSD
+                    # (you may choose to skip installing those).
+                    "fail2ban": "py311-fail2ban",  # commonly used on FreeBSD 14.x
+                    "strings": "binutils",
+                    "ss": "sockstat",  # closest built-in equivalent (no iproute2)
+                    "auditd": "auditd",  # base-system service on FreeBSD
+                    "python3": "python3",
+                }
+            ),
             # Homebrew (brew) — best-effort (some formulae are Linux-only)
-            "brew": identity_map({
-                "ss": "iproute2mac",
-                "procps": "procps",
-                "python3": "python",
-                "strings": "binutils",
-            }),
-
+            "brew": identity_map(
+                {
+                    "ss": "iproute2mac",
+                    "procps": "procps",
+                    "python3": "python",
+                    "strings": "binutils",
+                }
+            ),
             # Snap — only a few of these have well-known snaps; others vary by publisher.
-            "snap": identity_map({
-                "tcpdump": "tcpdump",
-                "curl": "curl",
-                "coreutils": "rust-coreutils",
-                "strace": "strace-static",
-                # leave the rest as identity (may or may not exist in the Snap Store)
-            }),
-
+            "snap": identity_map(
+                {
+                    "tcpdump": "tcpdump",
+                    "curl": "curl",
+                    "coreutils": "rust-coreutils",
+                    "strace": "strace-static",
+                    # leave the rest as identity (may or may not exist in the Snap Store)
+                }
+            ),
             # Flatpak — generally not used for these low-level CLI/admin tools.
             # Keep identity for completeness; you may want to treat this manager as "unsupported"
             # for this package set and fall back to the distro manager.
             "flatpak": identity_map({}),
-
             # Slackware (slackpkg)
-            "slackpkg": identity_map({
-                "ss": "iproute2",
-                "procps": "procps-ng",
-                "auditd": "audit",     # often via SlackBuilds; not always in the base set
-                "strings": "binutils",
-            }),
-
+            "slackpkg": identity_map(
+                {
+                    "ss": "iproute2",
+                    "procps": "procps-ng",
+                    "auditd": "audit",  # often via SlackBuilds; not always in the base set
+                    "strings": "binutils",
+                }
+            ),
             # Slackware (sbopkg/SlackBuilds.org)
             # Note: Basic system tools (tcpdump, curl, vim, etc.) are in official Slackware repos,
             # not SlackBuilds.org, so they remain as identity mappings (sbopkg won't find them).
             # Only specialized security/monitoring tools are on SlackBuilds.org.
-            "sbopkg": identity_map({
-                # These are available on SlackBuilds.org
-                "fail2ban": "fail2ban",
-                "rkhunter": "rkhunter",
-                "aide": "aide",
-                "rsyslog": "rsyslog",
-                "auditd": "audit",
-                # Basic tools below are in official repos, not SBo
-                "ss": "iproute2",
-                "procps": "procps-ng",
-                "strings": "binutils",
-            }),
+            "sbopkg": identity_map(
+                {
+                    # These are available on SlackBuilds.org
+                    "fail2ban": "fail2ban",
+                    "rkhunter": "rkhunter",
+                    "aide": "aide",
+                    "rsyslog": "rsyslog",
+                    "auditd": "audit",
+                    # Basic tools below are in official repos, not SBo
+                    "ss": "iproute2",
+                    "procps": "procps-ng",
+                    "strings": "binutils",
+                }
+            ),
         }
 
         return package_mappings.get(package_manager, {})
@@ -460,7 +444,8 @@ class PackageInstallerModule(HardeningModule):
     def is_applicable(self) -> bool:
         """This module is applicable if we have any package managers available"""
         return len(self.server_info.package_managers) > 0
-    
+
+
 # DEBUGGING HELP
 # if the system update failes on pacman due to a manually installed package: linux-firmware-nvidia: /usr/lib/firmware/nvidia/ad104 exists in filesystem
 # skip the particular package and upgrade again: sudo pacman -Syu --ignore linux-firmware-nvidia

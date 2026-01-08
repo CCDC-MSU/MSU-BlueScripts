@@ -1,22 +1,25 @@
-from fabric import task, Connection, Config
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import paramiko
 
-from utilities.utils import load_config, parse_hosts_file, is_connection_reset
+import paramiko
+from fabric import Config, Connection, task
+
+from utilities.deployment import CriticalPipelineError, HardeningOrchestrator
 from utilities.discovery import SystemDiscovery
-from utilities.deployment import HardeningOrchestrator
+from utilities.models import ServerCredentials
+from utilities.modules.root_escalation import escalate_to_root
+from utilities.utils import is_connection_reset, load_config, parse_hosts_file
 
 from .common import (
     _configure_parallel_logging,
     _get_console_logger,
     _host_label,
-    _host_log_handler
+    _host_log_handler,
 )
-from .tools import _upload_tools_internal
+from .tools import _upload_scripts_internal
 
 logger = logging.getLogger(__name__)
 
@@ -29,11 +32,19 @@ except Exception as e:
 
 
 @task
-def harden(c, hosts_file='hosts.txt', dry_run=False, modules=None, 
-           scripts=None, script_categories=None, priority_only=False):
+def harden(
+    c,
+    hosts_file="hosts.txt",
+    dry_run=False,
+    modules=None,
+    scripts=None,
+    script_categories=None,
+    priority_only=False,
+    yes=False,
+):
     """
     Apply hardening configurations to discovered hosts
-    
+
     Args:
         hosts_file: Path to hosts file
         dry_run: If True, only show what would be done
@@ -42,6 +53,7 @@ def harden(c, hosts_file='hosts.txt', dry_run=False, modules=None,
                  If not provided, runs default_scripts from config
         script_categories (list/str): Optional list of categories for bash scripts
         priority_only (bool): If True, only run scripts with PRIORITY=10 or less
+        yes (bool): If True, bypass manual verification prompts (e.g. reboot safety check)
     """
     _configure_parallel_logging()
     console_logger = _get_console_logger()
@@ -76,14 +88,14 @@ def harden(c, hosts_file='hosts.txt', dry_run=False, modules=None,
     if modules:
         # Check if modules is already a list (passed from another task) or string
         if isinstance(modules, list):
-             module_list = modules
+            module_list = modules
         else:
-             module_list = [m.strip() for m in modules.split(',')]
+            module_list = [m.strip() for m in modules.split(",")]
         console_logger.info(f"Applying modules: {module_list}")
 
     # Resolve scripts to run
     script_paths = []
-    
+
     # Load config for defaults
     try:
         config = load_config()
@@ -91,26 +103,26 @@ def harden(c, hosts_file='hosts.txt', dry_run=False, modules=None,
         config = {}
 
     if scripts:
-        if isinstance(scripts, str) and scripts.upper() == 'ALL':
+        if isinstance(scripts, str) and scripts.upper() == "ALL":
             scripts_dir = Path(__file__).parent.parent / "scripts/all"
             script_paths = [f"all/{s.name}" for s in scripts_dir.glob("*.sh")]
             console_logger.info(f"Scripts mode: ALL ({len(script_paths)} scripts)")
         elif isinstance(scripts, str):
-            requested = [s.strip() for s in scripts.split(',')]
+            requested = [s.strip() for s in scripts.split(",")]
             resolved = []
             for r in requested:
-                if '/' in r:
+                if "/" in r:
                     resolved.append(r)
                 else:
                     resolved.append(f"all/{r}")
             script_paths = resolved
             console_logger.info(f"Scripts mode: Custom ({len(script_paths)} scripts)")
         else:
-             # Assume list passed
-             script_paths = scripts
+            # Assume list passed
+            script_paths = scripts
     else:
         # Use defaults
-        script_paths = config.get('default_scripts', [])
+        script_paths = config.get("default_scripts", [])
         console_logger.info(f"Scripts mode: Default ({len(script_paths)} scripts)")
 
     console_logger.info(f"Found {len(servers)} servers to harden")
@@ -121,107 +133,159 @@ def harden(c, hosts_file='hosts.txt', dry_run=False, modules=None,
     def _harden_host(server_creds):
         host_id = _host_label(server_creds)
         with _host_log_handler("harden", host_id, timestamp) as log_path:
-            
             # Helper to run hardening logic given a valid connection
             def perform_hardening(conn, is_fallback=False):
-                # First discover the system
-                # If fallback, we might want to update creds or just assume root access implies sudo capability
+                root_password = None
+                # Escalate to root if connected as non-root sudo user
+                if conn.user != "root":
+                    logger.info(f"Non-root user '{conn.user}' detected, escalating to root...")
+                    try:
+                        conn, root_password = escalate_to_root(conn, server_creds)
+                        logger.info(f"Successfully escalated to root on {server_creds.host}")
+                    except CriticalPipelineError as e:
+                        logger.error(f"Root escalation failed: {e}")
+                        return {
+                            "host": server_creds.host,
+                            "status": f"error: root escalation failed - {e}",
+                            "log_file": str(log_path),
+                        }
+
+                # First discover the system (now running as root)
                 discovery = SystemDiscovery(conn, server_creds)
                 server_info = discovery.discover_system()
                 server_info._discovery = discovery
+                # Store root password for later logging if we escalated
+                if root_password:
+                    server_info._escalated_root_password = root_password
+
+                    # CRITICAL: Update credentials to use root for downstream modules (e.g. firewall/ssh connectivity checks)
+                    # This ensures they verify connectivity using the new root access, not the locked/limited original user
+                    root_key_path = os.path.abspath(
+                        os.path.join(os.path.dirname(__file__), "../keys/test-root-key.private")
+                    )
+                    server_info.credentials = ServerCredentials(
+                        host=server_creds.host,
+                        user="root",
+                        password=root_password,
+                        key_file=root_key_path,
+                        port=server_creds.port,
+                        friendly_name=server_creds.friendly_name,
+                    )
+                    logger.info("Updated server credentials to use escalated root access")
 
                 if not server_info.discovery_successful:
-                    logger.error(f"Discovery failed for {server_creds.host}, skipping hardening")
+                    logger.error(
+                        f"Discovery failed for {server_creds.host}, skipping hardening"
+                    )
                     return {
-                        'host': server_creds.host,
-                        'status': 'discovery-failed',
-                        'log_file': str(log_path)
+                        "host": server_creds.host,
+                        "status": "discovery-failed",
+                        "log_file": str(log_path),
                     }
 
                 # Then deploy hardening
-                orchestrator = HardeningOrchestrator(conn, server_info, script_paths=script_paths)
-                result = orchestrator.deploy(dry_run=dry_run, modules=module_list)
-                
-                # Tools upload
-                _upload_tools_internal(conn)
+                orchestrator = HardeningOrchestrator(
+                    conn, server_info, script_paths=script_paths
+                )
+                result = orchestrator.deploy(
+                    dry_run=dry_run, modules=module_list, bypass_reboot_prompt=yes
+                )
+
+                # Scripts upload (replacing tools upload)
+                _upload_scripts_internal(conn, dry_run=dry_run)
 
                 logger.info(f"Hardening completed for {server_creds.host}")
-                report_file = result.get('report_file', 'N/A')
+                report_file = result.get("report_file", "N/A")
                 logger.info(f"Report generated: {report_file}")
                 logger.info(f"Summary:\n{result['summary']}")
 
-                results = result.get('results', {})
+                results = result.get("results", {})
                 failed_actions = any(
-                    not action.success for module_results in results.values() for action in module_results
+                    not action.success
+                    for module_results in results.values()
+                    for action in module_results
                 )
-                
+
                 status_extra = " (fallback)" if is_fallback else ""
                 status = f"dry-run{status_extra}" if dry_run else f"ok{status_extra}"
-                
+
                 if failed_actions:
                     status = f"failed{status_extra}"
                     logger.error(f"Hardening had failures for {server_creds.host}")
 
                 return {
-                    'host': server_creds.host,
-                    'status': status,
-                    'log_file': str(log_path),
-                    'report_file': report_file
+                    "host": server_creds.host,
+                    "status": status,
+                    "log_file": str(log_path),
+                    "report_file": report_file,
                 }
 
-            # Setup connection parameters
+
             logger.info(f"Starting hardening on {server_creds.host}")
             connect_kwargs = {
-                'allow_agent': False,
-                'look_for_keys': False,
-                'timeout': 90
+                "allow_agent": False,
+                "look_for_keys": False,
+                "timeout": 30,
+                "banner_timeout": 10,
+                "auth_timeout": 10,
             }
             config_overrides = {
-                'sudo': {'password': None},
-                'load_ssh_configs': False,
-                'load_system_host_keys': False
+                "sudo": {"password": None},
+                "load_ssh_configs": False,
+                "load_system_host_keys": False,
             }
 
             if server_creds.key_file:
-                connect_kwargs['key_filename'] = server_creds.key_file
+                connect_kwargs["key_filename"] = server_creds.key_file
                 logger.info(f"Using SSH key: {server_creds.key_file}")
             elif server_creds.password:
-                connect_kwargs['password'] = server_creds.password
-                config_overrides['sudo']['password'] = server_creds.password
+                connect_kwargs["password"] = server_creds.password
+                config_overrides["sudo"]["password"] = server_creds.password
                 logger.info("Using password authentication")
 
             if server_creds.port != 22:
-                connect_kwargs['port'] = server_creds.port
+                connect_kwargs["port"] = server_creds.port
 
             fabric_config = Config(overrides=config_overrides)
-            
+
             # Password retry with exponential backoff: 0s, 2s, 4s delays
             PASSWORD_RETRY_DELAYS = [0, 2, 4]
-            
+
             # Helper to attempt a single connection
             def _try_connection(host, user, config, kwargs, label=""):
-                with Connection(host, user=user, config=config, connect_kwargs=kwargs) as conn:
+                with Connection(
+                    host, user=user, config=config, connect_kwargs=kwargs
+                ) as conn:
                     conn.run("true", hide=True, timeout=10)
                     if conn.transport:
                         conn.transport.set_keepalive(10)
                     return conn, perform_hardening(conn, is_fallback=bool(label))
-            
+
             last_error = None
-            
+
             # Phase 1: Try password auth with retries (if password provided and no key)
             if server_creds.password and not server_creds.key_file:
                 for attempt, delay in enumerate(PASSWORD_RETRY_DELAYS, 1):
                     if delay > 0:
                         logger.info(f"Waiting {delay}s before password retry...")
                         import time
+
                         time.sleep(delay)
 
                     try:
-                        logger.info(f"Password attempt {attempt}/{len(PASSWORD_RETRY_DELAYS)} for {server_creds.host}...")
-                        with Connection(server_creds.host, user=server_creds.user,
-                                       config=fabric_config, connect_kwargs=connect_kwargs) as conn:
+                        logger.info(
+                            f"Password attempt {attempt}/{len(PASSWORD_RETRY_DELAYS)} for {server_creds.host}..."
+                        )
+                        with Connection(
+                            server_creds.host,
+                            user=server_creds.user,
+                            config=fabric_config,
+                            connect_kwargs=connect_kwargs,
+                        ) as conn:
                             # Ignore host key changes - critical for fault tolerance
-                            conn.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                            conn.client.set_missing_host_key_policy(
+                                paramiko.AutoAddPolicy()
+                            )
                             conn.run("true", hide=True, timeout=10)
                             if conn.transport:
                                 conn.transport.set_keepalive(10)
@@ -230,17 +294,27 @@ def harden(c, hosts_file='hosts.txt', dry_run=False, modules=None,
                     except Exception as e:
                         last_error = e
                         logger.warning(f"Password attempt {attempt} failed: {e}")
-                
-                logger.warning(f"All {len(PASSWORD_RETRY_DELAYS)} password attempts failed, trying SSH key fallback...")
-            
+
+                logger.warning(
+                    f"All {len(PASSWORD_RETRY_DELAYS)} password attempts failed, trying SSH key fallback..."
+                )
+
             # Phase 2: Try key from hosts.txt (if specified)
             elif server_creds.key_file:
                 try:
-                    logger.info(f"Attempting connection with specified key: {server_creds.key_file}")
-                    with Connection(server_creds.host, user=server_creds.user,
-                                   config=fabric_config, connect_kwargs=connect_kwargs) as conn:
+                    logger.info(
+                        f"Attempting connection with specified key: {server_creds.key_file}"
+                    )
+                    with Connection(
+                        server_creds.host,
+                        user=server_creds.user,
+                        config=fabric_config,
+                        connect_kwargs=connect_kwargs,
+                    ) as conn:
                         # Ignore host key changes - critical for fault tolerance
-                        conn.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                        conn.client.set_missing_host_key_policy(
+                            paramiko.AutoAddPolicy()
+                        )
                         conn.run("true", hide=True, timeout=10)
                         if conn.transport:
                             conn.transport.set_keepalive(10)
@@ -248,57 +322,80 @@ def harden(c, hosts_file='hosts.txt', dry_run=False, modules=None,
                 except Exception as e:
                     last_error = e
                     logger.warning(f"Key auth with {server_creds.key_file} failed: {e}")
-            
+
             # Phase 3: Fallback to recovery key
             try:
-                logger.info(f"Attempting fallback to RECOVERY KEY for {server_creds.host}...")
-                
+                logger.info(
+                    f"Attempting fallback to RECOVERY KEY for {server_creds.host}..."
+                )
+
                 # Resolve key path relative to this file
                 # tasks/hardening.py -> ../keys/test-root-key.private
-                fallback_key = os.path.abspath(os.path.join(os.path.dirname(__file__), "../keys/test-root-key.private"))
-                
+                fallback_key = os.path.abspath(
+                    os.path.join(
+                        os.path.dirname(__file__), "../keys/test-root-key.private"
+                    )
+                )
+
                 if not os.path.exists(fallback_key):
                     logger.error(f"Recovery key not found at {fallback_key}")
                     if last_error:
                         raise last_error
-                    raise FileNotFoundError(f"No valid auth method and recovery key missing: {fallback_key}")
+                    raise FileNotFoundError(
+                        f"No valid auth method and recovery key missing: {fallback_key}"
+                    )
 
                 fallback_kwargs = {
-                    'allow_agent': False,
-                    'look_for_keys': False,
-                    'timeout': 90,
-                    'key_filename': [fallback_key]
+                    "allow_agent": False,
+                    "look_for_keys": False,
+                    "timeout": 30,
+                    "banner_timeout": 10,
+                    "auth_timeout": 10,
+                    "key_filename": [fallback_key],
                 }
                 if server_creds.port != 22:
-                    fallback_kwargs['port'] = server_creds.port
-                
-                # For root fallback, we don't need sudo password
-                fallback_config = Config(overrides={'load_ssh_configs': False, 'load_system_host_keys': False})
+                    fallback_kwargs["port"] = server_creds.port
 
-                with Connection(server_creds.host, user='root',
-                               config=fallback_config, connect_kwargs=fallback_kwargs) as conn:
+                # For root fallback, we don't need sudo password
+                fallback_config = Config(
+                    overrides={
+                        "load_ssh_configs": False,
+                        "load_system_host_keys": False,
+                    }
+                )
+
+                with Connection(
+                    server_creds.host,
+                    user="root",
+                    config=fallback_config,
+                    connect_kwargs=fallback_kwargs,
+                ) as conn:
                     # Ignore host key changes - critical for fault tolerance
                     conn.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
                     conn.run("true", hide=True, timeout=10)
                     if conn.transport:
                         conn.transport.set_keepalive(10)
-                    logger.info(f"RECOVERY KEY SUCCESS: Connected as root!")
+                    logger.info("RECOVERY KEY SUCCESS: Connected as root!")
                     return perform_hardening(conn, is_fallback=True)
 
             except Exception as fallback_e:
                 logger.error(f"Recovery key connection failed: {fallback_e}")
-                
+
                 # Determine primary error to report
                 primary_error = last_error if last_error else fallback_e
                 if is_connection_reset(primary_error):
-                    logger.error(f"Hardening failed for {server_creds.host}: Connection reset by peer")
+                    logger.error(
+                        f"Hardening failed for {server_creds.host}: Connection reset by peer"
+                    )
                 else:
-                    logger.error(f"Hardening failed for {server_creds.host}: {primary_error}")
-                
+                    logger.error(
+                        f"Hardening failed for {server_creds.host}: {primary_error}"
+                    )
+
                 return {
-                    'host': server_creds.host,
-                    'status': f'error: {primary_error} (recovery key also failed: {fallback_e})',
-                    'log_file': str(log_path)
+                    "host": server_creds.host,
+                    "status": f"error: {primary_error} (recovery key also failed: {fallback_e})",
+                    "log_file": str(log_path),
                 }
 
     results = []
@@ -312,9 +409,9 @@ def harden(c, hosts_file='hosts.txt', dry_run=False, modules=None,
         for future in as_completed(futures):
             results.append(future.result())
 
-    successful_hardenings = sum(1 for r in results if r['status'] == 'ok')
-    failed_hardenings = sum(1 for r in results if r['status'] not in ['ok', 'dry-run'])
-    dry_runs = sum(1 for r in results if r['status'] == 'dry-run')
+    successful_hardenings = sum(1 for r in results if r["status"] == "ok")
+    failed_hardenings = sum(1 for r in results if r["status"] not in ["ok", "dry-run"])
+    dry_runs = sum(1 for r in results if r["status"] == "dry-run")
 
     # End summary
     end_time = datetime.now()
@@ -326,44 +423,55 @@ def harden(c, hosts_file='hosts.txt', dry_run=False, modules=None,
     console_logger.info(f"Total time: {duration}")
     if len(servers) > 0:
         console_logger.info(
-            f"Hardening success rate: {successful_hardenings}/{len(servers)} ({(successful_hardenings/len(servers)*100):.1f}%)"
+            f"Hardening success rate: {successful_hardenings}/{len(servers)} ({(successful_hardenings / len(servers) * 100):.1f}%)"
         )
     if dry_runs > 0:
         console_logger.info(f"Dry runs: {dry_runs}")
     if failed_hardenings > 0:
-        failed_hosts = [r['host'] for r in results if r['status'] not in ['ok', 'dry-run']]
+        failed_hosts = [
+            r["host"] for r in results if r["status"] not in ["ok", "dry-run"]
+        ]
         console_logger.error(f"Hardening failed for: {', '.join(failed_hosts)}")
 
     return successful_hardenings, failed_hardenings
 
 
 @task
-def deploy_scripts(c, hosts_file='hosts.txt', dry_run=False, categories=None, priority_only=False):
+def deploy_scripts(
+    c, hosts_file="hosts.txt", dry_run=False, categories=None, priority_only=False
+):
     """Deploy only bash scripts to discovered hosts"""
     console_logger = _get_console_logger()
     console_logger.info("=" * 60)
     console_logger.info("CCDC BASH SCRIPT DEPLOYMENT STARTING")
     console_logger.info("=" * 60)
-    
+
     script_categories = categories
-    
+
     console_logger.info("Deploying shell scripts only")
     if categories:
         console_logger.info(f"Script categories: {categories}")
 
-    return harden(c, hosts_file=hosts_file, dry_run=dry_run,
-                  modules='shell_scripts', script_categories=script_categories,
-                  priority_only=priority_only)
+    return harden(
+        c,
+        hosts_file=hosts_file,
+        dry_run=dry_run,
+        modules="shell_scripts",
+        script_categories=script_categories,
+        priority_only=priority_only,
+    )
 
 
 @task
 def test_module(c, module, live=False):
     """Test individual hardening module across all hosts"""
     try:
-        from test_modules import ModuleTester
+        from module_test_runner import ModuleTester
     except ImportError:
-         logger.error("Could not import ModuleTester. Ensure test_modules.py is in path.")
-         return False
+        logger.error(
+            "Could not import ModuleTester. Ensure module_test_runner.py is in the project root."
+        )
+        return False
 
     _configure_parallel_logging()
     console_logger = _get_console_logger()
@@ -374,7 +482,7 @@ def test_module(c, module, live=False):
 
     # Parse hosts file
     try:
-        servers = parse_hosts_file('hosts.txt')
+        servers = parse_hosts_file("hosts.txt")
     except Exception as e:
         console_logger.error(f"Error parsing hosts file: {e}")
         return False
@@ -399,20 +507,21 @@ def test_module(c, module, live=False):
                 if not success:
                     logger.error(f"Module test failed for {server_creds.host}")
                 return {
-                    'host': server_creds.host,
-                    'success': success,
-                    'log_file': str(log_path)
+                    "host": server_creds.host,
+                    "success": success,
+                    "log_file": str(log_path),
                 }
             except Exception as e:
-                err_str = str(e)
                 if is_connection_reset(e):
-                    logger.error(f"Module test failed for {server_creds.host}: Connection reset by peer")
+                    logger.error(
+                        f"Module test failed for {server_creds.host}: Connection reset by peer"
+                    )
                 else:
                     logger.error(f"Module test failed for {server_creds.host}: {e}")
                 return {
-                    'host': server_creds.host,
-                    'success': False,
-                    'log_file': str(log_path)
+                    "host": server_creds.host,
+                    "success": False,
+                    "log_file": str(log_path),
                 }
 
     results = []
@@ -426,29 +535,65 @@ def test_module(c, module, live=False):
         for future in as_completed(futures):
             results.append(future.result())
 
-    successful = sum(1 for r in results if r['success'])
+    successful = sum(1 for r in results if r["success"])
     failed = len(results) - successful
 
     console_logger.info("=" * 60)
     console_logger.info("MODULE TEST SUMMARY")
     console_logger.info("=" * 60)
-    console_logger.info(f"Success rate: {successful}/{len(results)} ({(successful/len(results)*100):.1f}%)")
+    console_logger.info(
+        f"Success rate: {successful}/{len(results)} ({(successful / len(results) * 100):.1f}%)"
+    )
     if failed > 0:
-        failed_hosts = [r['host'] for r in results if not r['success']]
+        failed_hosts = [r["host"] for r in results if not r["success"]]
         console_logger.error(f"Module test failed for: {', '.join(failed_hosts)}")
 
     return failed == 0
 
 
 @task
+def apply_competition_firewall(c, hosts_file="hosts.txt", dry_run=False):
+    """
+    Apply competition-specific firewall rules to hosts.
+
+    This applies the final firewall configuration based on each host's
+    scored service (MySQL, SSH, FTP, etc.) as defined in docs/ists_firewall.md.
+
+    Hosts with Docker are automatically skipped.
+
+    Usage:
+        uv run fab apply-competition-firewall
+        uv run fab apply-competition-firewall --dry-run
+    """
+    _configure_parallel_logging()
+    console_logger = _get_console_logger()
+
+    console_logger.info("=" * 60)
+    console_logger.info("COMPETITION FIREWALL DEPLOYMENT")
+    console_logger.info("=" * 60)
+
+    if dry_run:
+        console_logger.info("DRY RUN MODE - No changes will be made")
+
+    # Run hardening with only the competition_firewall module
+    return harden(
+        c,
+        hosts_file=hosts_file,
+        dry_run=dry_run,
+        modules="competition_firewall",
+        yes=True,  # Bypass prompts
+    )
+
+
+@task
 def list_modules(c):
     """List all available hardening modules"""
     try:
-        from test_modules import ModuleTester
+        from module_test_runner import ModuleTester
     except ImportError:
-         print("Could not import ModuleTester")
-         return
-    
+        print("Could not import ModuleTester")
+        return
+
     try:
         tester = ModuleTester(CONFIG)
         tester.list_modules()
@@ -460,41 +605,43 @@ def list_modules(c):
 def test_all_modules(c, host_index=0, live=False):
     """Test all available hardening modules"""
     try:
-        from test_modules import ModuleTester
+        from module_test_runner import ModuleTester
     except ImportError:
-         print("Could not import ModuleTester")
-         return
-    
+        print("Could not import ModuleTester")
+        return
+
     try:
         tester = ModuleTester(CONFIG)
         dry_run = not live
-        
+
         logger.info("=" * 60)
         logger.info("TESTING ALL MODULES")
         logger.info("=" * 60)
-        
+
         results = {}
-        for module_name in tester.available_modules.keys():
+        for module_name in tester.available_modules:
             logger.info(f"\n--- Testing {module_name} ---")
             success = tester.test_module(module_name, host_index, dry_run)
             results[module_name] = success
-            
+
         # Summary
         logger.info("\n" + "=" * 60)
         logger.info("ALL MODULES TEST SUMMARY")
         logger.info("=" * 60)
-        
+
         successful = sum(1 for success in results.values() if success)
         total = len(results)
-        
+
         for module_name, success in results.items():
             status = "✓" if success else "✗"
             logger.info(f"{status} {module_name}")
-            
-        logger.info(f"\nSuccess rate: {successful}/{total} ({(successful/total*100):.1f}%)")
-        
+
+        logger.info(
+            f"\nSuccess rate: {successful}/{total} ({(successful / total * 100):.1f}%)"
+        )
+
         return results
-        
+
     except Exception as e:
         logger.error(f"All modules test failed: {e}")
         return False

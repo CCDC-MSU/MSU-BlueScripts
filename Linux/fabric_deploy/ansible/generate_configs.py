@@ -10,44 +10,43 @@ This script synchronizes:
 Run this before any Ansible playbook to ensure configs are in sync.
 """
 
-import sys
-import os
-import yaml
 import json
-import shutil
-from pathlib import Path
+import sys
 from datetime import datetime
+from pathlib import Path
+
+import yaml
 
 # Paths
 SCRIPT_DIR = Path(__file__).parent
 BASE_DIR = SCRIPT_DIR.parent
-HOSTS_FILE = BASE_DIR / 'hosts.txt'
-USERS_FILE = BASE_DIR / 'users.json'
-CONFIGS_DIR = BASE_DIR / 'configs'
-KEYS_DIR = BASE_DIR / 'keys'
+HOSTS_FILE = BASE_DIR / "hosts.txt"
+USERS_FILE = BASE_DIR / "users.json"
+CONFIGS_DIR = BASE_DIR / "configs"
+KEYS_DIR = BASE_DIR / "keys"
 
 # Output paths
-INVENTORY_DIR = SCRIPT_DIR / 'inventory'
-GROUP_VARS_DIR = SCRIPT_DIR / 'group_vars'
-PYTHON_STATE_FILE = SCRIPT_DIR / 'python_bootstrap_state.json'
+INVENTORY_DIR = SCRIPT_DIR / "inventory"
+GROUP_VARS_DIR = SCRIPT_DIR / "group_vars"
+PYTHON_STATE_FILE = SCRIPT_DIR / "python_bootstrap_state.json"
 
 # Mapping of friendly names to OS families
 OS_FAMILY_MAP = {
-    'rocky': 'redhat',
-    'centos': 'redhat',
-    'fedora': 'redhat',
-    'rhel': 'redhat',
-    'alma': 'redhat',
-    'debian': 'debian',
-    'ubuntu': 'debian',
-    'alpine': 'alpine',
-    'arch': 'arch',
-    'opensuse': 'suse',
-    'suse': 'suse',
-    'slackware': 'slackware',
-    'gentoo': 'gentoo',
-    'freebsd': 'bsd',
-    'openbsd': 'bsd',
+    "rocky": "redhat",
+    "centos": "redhat",
+    "fedora": "redhat",
+    "rhel": "redhat",
+    "alma": "redhat",
+    "debian": "debian",
+    "ubuntu": "debian",
+    "alpine": "alpine",
+    "arch": "arch",
+    "opensuse": "suse",
+    "suse": "suse",
+    "slackware": "slackware",
+    "gentoo": "gentoo",
+    "freebsd": "bsd",
+    "openbsd": "bsd",
 }
 
 
@@ -58,24 +57,32 @@ def parse_hosts_file() -> list:
         return []
 
     hosts = []
-    with open(HOSTS_FILE, 'r') as f:
+    with open(HOSTS_FILE) as f:
         for line_num, line in enumerate(f, 1):
             line = line.strip()
-            if not line or line.startswith('#'):
+            if not line or line.startswith("#"):
                 continue
 
-            parts = line.split(':')
+            parts = line.split(":")
             if len(parts) < 3:
-                print(f"Warning: Skipping invalid line {line_num}: {line}", file=sys.stderr)
+                print(
+                    f"Warning: Skipping invalid line {line_num}: {line}",
+                    file=sys.stderr,
+                )
                 continue
 
             host = parts[0]
             user = parts[1]
             auth = parts[2]
 
-            is_key = (auth.endswith('.private') or auth.endswith('.pub') or
-                     auth.startswith('/') or auth.startswith('~') or
-                     auth.startswith('keys/') or auth.endswith('.pem'))
+            is_key = (
+                auth.endswith(".private")
+                or auth.endswith(".pub")
+                or auth.startswith("/")
+                or auth.startswith("~")
+                or auth.startswith("keys/")
+                or auth.endswith(".pem")
+            )
 
             port = 22
             name = None
@@ -90,26 +97,26 @@ def parse_hosts_file() -> list:
                     name = fourth
 
             if not name:
-                name = host.replace('.', '_')
+                name = host.replace(".", "_")
 
-            os_family = 'unknown'
+            os_family = "unknown"
             for key, family in OS_FAMILY_MAP.items():
                 if key in name.lower():
                     os_family = family
                     break
 
             host_info = {
-                'name': name,
-                'host': host,
-                'user': user,
-                'port': port,
-                'os_family': os_family,
+                "name": name,
+                "host": host,
+                "user": user,
+                "port": port,
+                "os_family": os_family,
             }
 
             if is_key:
-                host_info['key_file'] = auth
+                host_info["key_file"] = auth
             else:
-                host_info['password'] = auth
+                host_info["password"] = auth
 
             hosts.append(host_info)
 
@@ -120,7 +127,7 @@ def load_python_bootstrap_state() -> dict:
     """Load Python bootstrap installation state"""
     if PYTHON_STATE_FILE.exists():
         try:
-            with open(PYTHON_STATE_FILE, 'r') as f:
+            with open(PYTHON_STATE_FILE) as f:
                 return json.load(f)
         except Exception as e:
             print(f"Warning: Failed to load Python bootstrap state: {e}")
@@ -133,20 +140,20 @@ def generate_inventory(hosts: list) -> dict:
     python_state = load_python_bootstrap_state()
 
     inventory = {
-        'all': {
-            'children': {
-                'linux': {
-                    'children': {
-                        'redhat': {'hosts': {}},
-                        'debian': {'hosts': {}},
-                        'alpine': {'hosts': {}},
-                        'arch': {'hosts': {}},
-                        'suse': {'hosts': {}},
-                        'slackware': {'hosts': {}},
-                        'gentoo': {'hosts': {}},
+        "all": {
+            "children": {
+                "linux": {
+                    "children": {
+                        "redhat": {"hosts": {}},
+                        "debian": {"hosts": {}},
+                        "alpine": {"hosts": {}},
+                        "arch": {"hosts": {}},
+                        "suse": {"hosts": {}},
+                        "slackware": {"hosts": {}},
+                        "gentoo": {"hosts": {}},
                     }
                 },
-                'bsd': {'hosts': {}},
+                "bsd": {"hosts": {}},
             },
             # No global ansible_python_interpreter - set per-host based on bootstrap state
         }
@@ -154,46 +161,54 @@ def generate_inventory(hosts: list) -> dict:
 
     for h in hosts:
         host_vars = {
-            'ansible_host': h['host'],
-            'ansible_user': h['user'],
-            'ansible_port': h['port'],
+            "ansible_host": h["host"],
+            "ansible_user": h["user"],
+            "ansible_port": h["port"],
         }
 
-        if 'key_file' in h:
-            key_path = h['key_file']
-            if not key_path.startswith('/'):
+        if "key_file" in h:
+            key_path = h["key_file"]
+            if not key_path.startswith("/"):
                 key_path = str((BASE_DIR / key_path).resolve())
-            host_vars['ansible_private_key_file'] = key_path
+            host_vars["ansible_private_key_file"] = key_path
         else:
-            host_vars['ansible_password'] = h['password']
-            host_vars['ansible_ssh_pass'] = h['password']
+            host_vars["ansible_password"] = h["password"]
+            host_vars["ansible_ssh_pass"] = h["password"]
 
         # Set ansible_python_interpreter only if Python 3.12 was successfully installed
-        host_ip = h['host']
-        if host_ip in python_state and python_state[host_ip].get('success'):
-            python_path = python_state[host_ip].get('python_path', '/root/python/bin/python3.12')
-            host_vars['ansible_python_interpreter'] = python_path
+        host_ip = h["host"]
+        if host_ip in python_state and python_state[host_ip].get("success"):
+            python_path = python_state[host_ip].get(
+                "python_path", "/root/python/bin/python3.12"
+            )
+            host_vars["ansible_python_interpreter"] = python_path
         # Otherwise, omit it and let Ansible auto-discover Python
 
-        family = h['os_family']
-        name = h['name']
+        family = h["os_family"]
+        name = h["name"]
 
-        if family == 'bsd':
-            inventory['all']['children']['bsd']['hosts'][name] = host_vars
-        elif family in inventory['all']['children']['linux']['children']:
-            inventory['all']['children']['linux']['children'][family]['hosts'][name] = host_vars
+        if family == "bsd":
+            inventory["all"]["children"]["bsd"]["hosts"][name] = host_vars
+        elif family in inventory["all"]["children"]["linux"]["children"]:
+            inventory["all"]["children"]["linux"]["children"][family]["hosts"][name] = (
+                host_vars
+            )
         else:
-            if 'unknown' not in inventory['all']['children']['linux']['children']:
-                inventory['all']['children']['linux']['children']['unknown'] = {'hosts': {}}
-            inventory['all']['children']['linux']['children']['unknown']['hosts'][name] = host_vars
+            if "unknown" not in inventory["all"]["children"]["linux"]["children"]:
+                inventory["all"]["children"]["linux"]["children"]["unknown"] = {
+                    "hosts": {}
+                }
+            inventory["all"]["children"]["linux"]["children"]["unknown"]["hosts"][
+                name
+            ] = host_vars
 
     # Clean up empty groups
-    for group_name in list(inventory['all']['children']['linux']['children'].keys()):
-        if not inventory['all']['children']['linux']['children'][group_name]['hosts']:
-            del inventory['all']['children']['linux']['children'][group_name]
+    for group_name in list(inventory["all"]["children"]["linux"]["children"].keys()):
+        if not inventory["all"]["children"]["linux"]["children"][group_name]["hosts"]:
+            del inventory["all"]["children"]["linux"]["children"][group_name]
 
-    if not inventory['all']['children']['bsd']['hosts']:
-        del inventory['all']['children']['bsd']
+    if not inventory["all"]["children"]["bsd"]["hosts"]:
+        del inventory["all"]["children"]["bsd"]
 
     return inventory
 
@@ -206,12 +221,12 @@ def sync_config_templates():
 
     # Mapping of config files to their Ansible template destinations
     config_mappings = {
-        'rsyslog.conf': 'roles/logging_setup/templates/rsyslog-ccdc.conf.j2',
-        'journald.conf': 'roles/logging_setup/templates/journald-ccdc.conf.j2',
-        'audit.rules': 'roles/logging_setup/templates/audit-ccdc.rules.j2',
-        'logrotate.conf': 'roles/logging_setup/templates/logrotate-ccdc.conf.j2',
-        'bsd_syslog.conf': 'roles/logging_setup/templates/bsd-syslog.conf.j2',
-        'bsd_newsyslog.conf': 'roles/logging_setup/templates/bsd-newsyslog.conf.j2',
+        "rsyslog.conf": "roles/logging_setup/templates/rsyslog-ccdc.conf.j2",
+        "journald.conf": "roles/logging_setup/templates/journald-ccdc.conf.j2",
+        "audit.rules": "roles/logging_setup/templates/audit-ccdc.rules.j2",
+        "logrotate.conf": "roles/logging_setup/templates/logrotate-ccdc.conf.j2",
+        "bsd_syslog.conf": "roles/logging_setup/templates/bsd-syslog.conf.j2",
+        "bsd_newsyslog.conf": "roles/logging_setup/templates/bsd-newsyslog.conf.j2",
     }
 
     synced = []
@@ -223,14 +238,14 @@ def sync_config_templates():
             dest_file.parent.mkdir(parents=True, exist_ok=True)
 
             # Read source
-            with open(src_file, 'r') as f:
+            with open(src_file) as f:
                 content = f.read()
 
             # Add Ansible header
             header = f"# Auto-generated from {src_name}\n# Last synced: {datetime.now().isoformat()}\n# Managed by Ansible - do not edit manually\n\n"
 
             # Write with header
-            with open(dest_file, 'w') as f:
+            with open(dest_file, "w") as f:
                 f.write(header + content)
 
             synced.append(src_name)
@@ -244,7 +259,7 @@ def load_users_config() -> dict:
         print(f"Warning: users.json not found: {USERS_FILE}")
         return {}
 
-    with open(USERS_FILE, 'r') as f:
+    with open(USERS_FILE) as f:
         users = json.load(f)
 
     return users
@@ -256,18 +271,18 @@ def generate_group_vars(users_config: dict):
 
     # Create all.yaml with user configuration
     all_vars = {
-        'ccdc_regular_users': users_config.get('regular_users', []),
-        'ccdc_super_users': users_config.get('super_users', []),
-        'ccdc_do_not_change_users': users_config.get('do_not_change_users', []),
+        "ccdc_regular_users": users_config.get("regular_users", []),
+        "ccdc_super_users": users_config.get("super_users", []),
+        "ccdc_do_not_change_users": users_config.get("do_not_change_users", []),
     }
 
     # Add root key path if exists
-    root_key = KEYS_DIR / 'root-key.pub'
+    root_key = KEYS_DIR / "root-key.pub"
     if root_key.exists():
-        all_vars['ccdc_root_public_key'] = str(root_key.resolve())
+        all_vars["ccdc_root_public_key"] = str(root_key.resolve())
 
-    with open(GROUP_VARS_DIR / 'all.yaml', 'w') as f:
-        f.write(f"# Auto-generated from users.json\n")
+    with open(GROUP_VARS_DIR / "all.yaml", "w") as f:
+        f.write("# Auto-generated from users.json\n")
         f.write(f"# Last synced: {datetime.now().isoformat()}\n")
         f.write("---\n")
         yaml.dump(all_vars, f, default_flow_style=False)
@@ -284,23 +299,27 @@ def main():
     if hosts:
         inventory = generate_inventory(hosts)
         INVENTORY_DIR.mkdir(parents=True, exist_ok=True)
-        with open(INVENTORY_DIR / 'hosts.yaml', 'w') as f:
+        with open(INVENTORY_DIR / "hosts.yaml", "w") as f:
             yaml.dump(inventory, f, default_flow_style=False, sort_keys=False)
         print(f"  - Generated inventory with {len(hosts)} hosts")
 
         # Print groups
-        linux_groups = inventory['all']['children'].get('linux', {}).get('children', {})
+        linux_groups = inventory["all"]["children"].get("linux", {}).get("children", {})
         for group, data in linux_groups.items():
-            count = len(data.get('hosts', {}))
+            count = len(data.get("hosts", {}))
             if count:
                 print(f"    - {group}: {count} hosts")
 
         # Print Python bootstrap status
         python_state = load_python_bootstrap_state()
         if python_state:
-            print(f"\n  Python Bootstrap Status:")
-            successful = [ip for ip, data in python_state.items() if data.get('success')]
-            failed = [ip for ip, data in python_state.items() if not data.get('success')]
+            print("\n  Python Bootstrap Status:")
+            successful = [
+                ip for ip, data in python_state.items() if data.get("success")
+            ]
+            failed = [
+                ip for ip, data in python_state.items() if not data.get("success")
+            ]
             print(f"    - Python 3.12 installed: {len(successful)} hosts")
             if successful:
                 for ip in successful[:3]:  # Show first 3
@@ -312,9 +331,11 @@ def main():
                 for ip in failed:
                     print(f"      ○ {ip} (will use system Python)")
         else:
-            print(f"\n  Python Bootstrap Status: Not run yet")
-            print(f"    - Run 'uv run fab test-module --module=python_bootstrap --live' first")
-            print(f"    - Or it will run during 'uv run fab harden'")
+            print("\n  Python Bootstrap Status: Not run yet")
+            print(
+                "    - Run 'uv run fab test-module --module=python_bootstrap --live' first"
+            )
+            print("    - Or it will run during 'uv run fab harden'")
     else:
         print("  - No hosts found!")
 
@@ -338,7 +359,7 @@ def main():
     # 4. Generate group vars
     print("\n[4/4] Generating group_vars...")
     generate_group_vars(users)
-    print(f"  - Generated: group_vars/all.yaml")
+    print("  - Generated: group_vars/all.yaml")
 
     print("\n" + "=" * 60)
     print("Config generation complete!")
@@ -359,5 +380,5 @@ def main():
     print("  - ansible.cfg")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

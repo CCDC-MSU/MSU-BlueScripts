@@ -1,18 +1,18 @@
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional
-import re
 
 
 @dataclass
 class ServerCredentials:
     """Credentials for connecting to a server"""
+
     host: str
-    user: str = 'root'
-    password: Optional[str] = None
-    key_file: Optional[str] = None
+    user: str = "root"
+    password: str | None = None
+    key_file: str | None = None
     port: int = 22
-    friendly_name: Optional[str] = None
+    friendly_name: str | None = None
 
     @property
     def display_name(self) -> str:
@@ -23,13 +23,16 @@ class ServerCredentials:
 @dataclass
 class UserInfo:
     """Information about a system user"""
+
     username: str
     uid: int
     gid: int
     home: str
     shell: str
     valid_shell: bool
-    requires_password_change: bool = False  # True if user has a password hash (not * or !)
+    requires_password_change: bool = (
+        False  # True if user has a password hash (not * or !)
+    )
     had_key: bool = False  # True if user had SSH keys in authorized_keys (potential red team target)
 
     @property
@@ -41,35 +44,37 @@ class UserInfo:
 @dataclass
 class OSInfo:
     """Operating system information"""
-    distro: str = 'unknown'
-    version: str = 'unknown'
-    kernel: str = 'unknown'
-    architecture: str = 'unknown'
+
+    distro: str = "unknown"
+    version: str = "unknown"
+    kernel: str = "unknown"
+    architecture: str = "unknown"
 
     @property
     def is_debian_based(self) -> bool:
         """Check if OS is Debian-based (Ubuntu, Debian)"""
-        return self.distro.lower() in ['ubuntu', 'debian']
+        return self.distro.lower() in ["ubuntu", "debian"]
 
     @property
     def is_redhat_based(self) -> bool:
         """Check if OS is RedHat-based (CentOS, RHEL, Fedora)"""
-        return self.distro.lower() in ['centos', 'rhel', 'fedora']
+        return self.distro.lower() in ["centos", "rhel", "fedora"]
 
 
 @dataclass
 class NetworkInfo:
     """Network configuration information"""
-    interfaces: str = ''
-    listening_ports: str = ''
-    default_route: str = ''
+
+    interfaces: str = ""
+    listening_ports: str = ""
+    default_route: str = ""
 
     @property
-    def open_ports(self) -> List[str]:
+    def open_ports(self) -> list[str]:
         """Extract list of open ports from listening_ports string"""
         ports = []
         if self.listening_ports:
-            port_matches = re.findall(r':(\d+)\s', self.listening_ports)
+            port_matches = re.findall(r":(\d+)\s", self.listening_ports)
             ports = list(set(port_matches))
         return sorted(ports, key=int)
 
@@ -77,63 +82,71 @@ class NetworkInfo:
 @dataclass
 class SudoersInfo:
     """Summary of sudoers entries and sudo access"""
-    nopasswd_lines: List[str] = field(default_factory=list)
-    sudoer_users: List[str] = field(default_factory=list)
-    sudoer_groups: List[str] = field(default_factory=list)
-    sudoer_group_all: List[str] = field(default_factory=list)
+
+    nopasswd_lines: list[str] = field(default_factory=list)
+    sudoer_users: list[str] = field(default_factory=list)
+    sudoer_groups: list[str] = field(default_factory=list)
+    sudoer_group_all: list[str] = field(default_factory=list)
 
 
 @dataclass
 class ServerInfo:
     """Complete server information from discovery"""
+
     hostname: str
     credentials: ServerCredentials
     discovery_time: datetime = field(default_factory=datetime.now)
 
     # OS Information
     os: OSInfo = field(default_factory=OSInfo)
-    init_system: str = 'unknown'
-    package_managers: List[str] = field(default_factory=list)
+    init_system: str = "unknown"
+    package_managers: list[str] = field(default_factory=list)
 
-    # User Information  
-    users: List[UserInfo] = field(default_factory=list)
-    groups: List[str] = field(default_factory=list)
+    # User Information
+    users: list[UserInfo] = field(default_factory=list)
+    groups: list[str] = field(default_factory=list)
 
     # Sudoers
-    sudoers_dump: str = ''
+    sudoers_dump: str = ""
     sudoers_info: SudoersInfo = field(default_factory=SudoersInfo)
 
     # Services
-    services: List[str] = field(default_factory=list)
+    services: list[str] = field(default_factory=list)
 
     # Network
     network: NetworkInfo = field(default_factory=NetworkInfo)
 
     # Security Tools
-    security_tools: Dict[str, bool] = field(default_factory=dict)
+    security_tools: dict[str, bool] = field(default_factory=dict)
 
     # User/Group Management Commands
-    available_commands: List[str] = field(default_factory=list)
+    available_commands: list[str] = field(default_factory=list)
 
     # System Resources
-    memory_info: str = ''
-    disk_info: str = ''
+    memory_info: str = ""
+    disk_info: str = ""
     cpu_cores: int = 0
-    uptime: str = ''
+    uptime: str = ""
 
     # Shell Information
-    default_shell: str = '/bin/sh'
-    sudo_group: str = 'sudo'    # the group with sudo access
+    default_shell: str = "/bin/sh"
+    sudo_group: str = "sudo"  # the group with sudo access
 
     # Discovery Status
     discovery_successful: bool = False
-    discovery_errors: List[str] = field(default_factory=list)
-    
+    discovery_errors: list[str] = field(default_factory=list)
+
+    # Controller IP (the IP of the machine running hardening, as seen by remote host)
+    controller_ip: str = ""
+
+    # Docker detection
+    has_docker: bool = False
+
     # State flags
     safe_to_reboot: bool = False
 
     @property
-    def regular_users(self) -> List[UserInfo]:
+    def regular_users(self) -> list[UserInfo]:
         return [user for user in self.users if user.is_regular_user]
 
     @property
@@ -145,22 +158,22 @@ class ServerInfo:
         return len(self.regular_users)
 
     @property
-    def usernames(self) -> List[str]:
+    def usernames(self) -> list[str]:
         return [user.username for user in self.users]
 
     @property
-    def regular_usernames(self) -> List[str]:
+    def regular_usernames(self) -> list[str]:
         return [user.username for user in self.regular_users]
 
     @property
-    def users_requiring_password_change(self) -> List[UserInfo]:
+    def users_requiring_password_change(self) -> list[UserInfo]:
         return [user for user in self.users if user.requires_password_change]
 
     @property
     def users_requiring_password_change_count(self) -> int:
         return len(self.users_requiring_password_change)
 
-    def get_user(self, username: str) -> Optional[UserInfo]:
+    def get_user(self, username: str) -> UserInfo | None:
         for user in self.users:
             if user.username == username:
                 return user
@@ -178,10 +191,10 @@ class ServerInfo:
         def yn(v: bool) -> str:
             return "yes" if v else "no"
 
-        def join_or_dash(items: List[str]) -> str:
+        def join_or_dash(items: list[str]) -> str:
             return ", ".join(items) if items else "—"
 
-        def truncate_list(items: List[str], limit: int = 12) -> str:
+        def truncate_list(items: list[str], limit: int = 12) -> str:
             if not items:
                 return "—"
             if len(items) <= limit:
@@ -192,7 +205,7 @@ class ServerInfo:
         def format_kv(label: str, value: str, width: int = 18) -> str:
             return f"{label:<{width}} {value}"
 
-        def format_block(title: str, lines: List[str]) -> str:
+        def format_block(title: str, lines: list[str]) -> str:
             body = "\n".join(f"  {line}" for line in lines) if lines else "  —"
             return f"{title}\n{body}"
 
@@ -202,7 +215,9 @@ class ServerInfo:
             auth_bits.append(f"key={self.credentials.key_file}")
         auth_bits.append(f"password_set={yn(self.credentials.password is not None)}")
 
-        conn = f"{self.credentials.user}@{self.credentials.host}:{self.credentials.port}"
+        conn = (
+            f"{self.credentials.user}@{self.credentials.host}:{self.credentials.port}"
+        )
 
         # OS line
         os_line = f"{self.os.distro} {self.os.version} ({self.os.architecture})"
@@ -214,14 +229,20 @@ class ServerInfo:
         # Users
         regular_names = sorted(self.regular_usernames)
         system_names = sorted([u.username for u in self.users if not u.is_regular_user])
-        pw_change_names = sorted([u.username for u in self.users_requiring_password_change])
+        pw_change_names = sorted(
+            [u.username for u in self.users_requiring_password_change]
+        )
         group_names = sorted(self.groups or [])
         sudoers_info = getattr(self, "sudoers_info", None)
 
         # Services/security tools
         services = sorted(self.services)
-        installed_tools = sorted([name for name, installed in self.security_tools.items() if installed])
-        missing_tools = sorted([name for name, installed in self.security_tools.items() if not installed])
+        installed_tools = sorted(
+            [name for name, installed in self.security_tools.items() if installed]
+        )
+        missing_tools = sorted(
+            [name for name, installed in self.security_tools.items() if not installed]
+        )
         available_cmds = sorted(self.available_commands or [])
 
         # Network
@@ -240,85 +261,148 @@ class ServerInfo:
         header = f"🖥️  ServerInfo: {self.hostname}"
         sub = f"{conn}  |  discovered {dt}  |  discovery={status}"
 
-        sections: List[str] = []
+        sections: list[str] = []
 
         sections.append(
-            format_block("OS", [
-                format_kv("OS", os_line),
-                format_kv("Pkg managers", join_or_dash(self.package_managers)),
-                format_kv("Default shell", self.default_shell or "—"),
-            ])
+            format_block(
+                "OS",
+                [
+                    format_kv("OS", os_line),
+                    format_kv("Pkg managers", join_or_dash(self.package_managers)),
+                    format_kv("Default shell", self.default_shell or "—"),
+                ],
+            )
         )
 
         sections.append(
-            format_block("Users", [
-                format_kv("Total users", str(self.user_count)),
-                format_kv("Regular users", f"{self.regular_user_count} ({truncate_list(regular_names)})"),
-                format_kv("System users", f"{len(system_names)} ({truncate_list(system_names)})"),
-                format_kv("PW change req", f"{self.users_requiring_password_change_count} ({truncate_list(pw_change_names)})"),
-                format_kv("Groups", f"{len(group_names)} ({truncate_list(group_names)})"),
-            ])
+            format_block(
+                "Users",
+                [
+                    format_kv("Total users", str(self.user_count)),
+                    format_kv(
+                        "Regular users",
+                        f"{self.regular_user_count} ({truncate_list(regular_names)})",
+                    ),
+                    format_kv(
+                        "System users",
+                        f"{len(system_names)} ({truncate_list(system_names)})",
+                    ),
+                    format_kv(
+                        "PW change req",
+                        f"{self.users_requiring_password_change_count} ({truncate_list(pw_change_names)})",
+                    ),
+                    format_kv(
+                        "Groups", f"{len(group_names)} ({truncate_list(group_names)})"
+                    ),
+                ],
+            )
         )
 
         if sudoers_info:
             sections.append(
-                format_block("Sudoers", [
-                    format_kv("NOPASSWD lines", str(len(sudoers_info.nopasswd_lines))),
-                    format_kv("Sudo users", truncate_list(sorted(sudoers_info.sudoer_users))),
-                    format_kv("Sudo groups", truncate_list(sorted(sudoers_info.sudoer_groups))),
-                    format_kv("Groups ALL", truncate_list(sorted(sudoers_info.sudoer_group_all))),
-                ])
+                format_block(
+                    "Sudoers",
+                    [
+                        format_kv(
+                            "NOPASSWD lines", str(len(sudoers_info.nopasswd_lines))
+                        ),
+                        format_kv(
+                            "Sudo users",
+                            truncate_list(sorted(sudoers_info.sudoer_users)),
+                        ),
+                        format_kv(
+                            "Sudo groups",
+                            truncate_list(sorted(sudoers_info.sudoer_groups)),
+                        ),
+                        format_kv(
+                            "Groups ALL",
+                            truncate_list(sorted(sudoers_info.sudoer_group_all)),
+                        ),
+                    ],
+                )
             )
 
         sections.append(
-            format_block("User mgmt cmds", [
-                format_kv("Available", truncate_list(available_cmds)),
-            ])
+            format_block(
+                "User mgmt cmds",
+                [
+                    format_kv("Available", truncate_list(available_cmds)),
+                ],
+            )
         )
 
         sections.append(
-            format_block("Services", [
-                format_kv("Running", f"{len(services)}"),
-                format_kv("List", truncate_list(services)),
-            ])
+            format_block(
+                "Services",
+                [
+                    format_kv("Running", f"{len(services)}"),
+                    format_kv("List", truncate_list(services)),
+                ],
+            )
         )
 
         sections.append(
-            format_block("Network", [
-                format_kv("Open ports", ports_str),
-                format_kv("Default route", self.network.default_route.strip() or "—"),
-                format_kv("Interfaces", "present" if self.network.interfaces.strip() else "—"),
-                format_kv("Listening raw", "present" if self.network.listening_ports.strip() else "—"),
-            ])
+            format_block(
+                "Network",
+                [
+                    format_kv("Controller IP", self.controller_ip or "—"),
+                    format_kv("Open ports", ports_str),
+                    format_kv(
+                        "Default route", self.network.default_route.strip() or "—"
+                    ),
+                    format_kv(
+                        "Interfaces",
+                        "present" if self.network.interfaces.strip() else "—",
+                    ),
+                    format_kv(
+                        "Listening raw",
+                        "present" if self.network.listening_ports.strip() else "—",
+                    ),
+                ],
+            )
         )
 
         sections.append(
-            format_block("Security tools", [
-                format_kv("Installed", truncate_list(installed_tools)),
-                format_kv("Missing", truncate_list(missing_tools)),
-            ])
+            format_block(
+                "Security tools",
+                [
+                    format_kv("Installed", truncate_list(installed_tools)),
+                    format_kv("Missing", truncate_list(missing_tools)),
+                ],
+            )
         )
 
         sections.append(
-            format_block("Resources", [
-                format_kv("CPU cores", str(self.cpu_cores) if self.cpu_cores else "—"),
-                format_kv("Uptime", self.uptime.strip() or "—"),
-                format_kv("Memory", self.memory_info.strip() or "—"),
-                format_kv("Disk", self.disk_info.strip() or "—"),
-            ])
+            format_block(
+                "Resources",
+                [
+                    format_kv(
+                        "CPU cores", str(self.cpu_cores) if self.cpu_cores else "—"
+                    ),
+                    format_kv("Uptime", self.uptime.strip() or "—"),
+                    format_kv("Memory", self.memory_info.strip() or "—"),
+                    format_kv("Disk", self.disk_info.strip() or "—"),
+                ],
+            )
         )
 
         sections.append(
-            format_block("Credentials", [
-                format_kv("Auth", truncate_list(auth_bits, limit=99)),
-            ])
+            format_block(
+                "Credentials",
+                [
+                    format_kv("Auth", truncate_list(auth_bits, limit=99)),
+                ],
+            )
         )
 
         if not self.discovery_successful or self.discovery_errors:
             sections.append(
-                format_block("Discovery notes", [
-                    format_kv("Errors", truncate_list(errors, limit=8)),
-                ])
+                format_block(
+                    "Discovery notes",
+                    [
+                        format_kv("Errors", truncate_list(errors, limit=8)),
+                    ],
+                )
             )
 
         return "\n".join([header, sub, "—" * 72, *sections])

@@ -10,6 +10,7 @@ MAX_DEPTH="${2:-50}"
 TEMP_DIR="${TMPDIR:-/tmp}"
 TEMP_FILE="${TEMP_DIR}/audit_trace_$$.tmp"
 CACHE_FILE="${TEMP_DIR}/audit_cache_$$.tmp"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 trap 'rm -f "$TEMP_FILE" "$CACHE_FILE"' EXIT INT TERM
 
@@ -39,7 +40,7 @@ usage() {
 }
 
 check_privileges() {
-    if ! ausearch -m SYSCALL --format text > /dev/null 2>&1; then
+    if ! id -u | grep -q "^0$"; then
         printf "${RED}Error: Cannot access audit logs.${NC}\n" >&2
         printf "Run as root or with CAP_AUDIT_READ capability.\n" >&2
         exit 1
@@ -50,9 +51,9 @@ check_privileges() {
 get_audit_info() {
     target_pid="$1"
 
-    # Search for execve events for this PID
-    # Get the most recent one (last in output)
-    ausearch -p "$target_pid" -m SYSCALL,EXECVE -i 2>/dev/null | \
+    # Search for execve events for this PID (with timeout to prevent hanging)
+    # Use -ts recent to limit search scope and --raw for faster parsing
+    timeout 5s sh $SCRIPT_DIR/ausearch-wrapper.sh -p "$target_pid" -m SYSCALL,EXECVE --raw 2>/dev/null | \
     awk -v pid="$target_pid" '
     BEGIN {
         time=""; ppid=""; exe=""; uid=""; auid=""; key=""
@@ -64,8 +65,14 @@ get_audit_info() {
         for (i=1; i<=NF; i++) {
             if ($i ~ /^msg=audit\(/) {
                 # Extract timestamp
-                match($i, /audit\(([0-9]+\.[0-9]+)/, arr)
-                if (arr[1] != "") record_time = arr[1]
+            if ($i ~ /^msg=audit\(/) {
+                # Extract timestamp
+                # format: msg=audit(1234567890.123:456)
+                ts = $i
+                sub(/^msg=audit\(/, "", ts)
+                split(ts, parts, ":")
+                record_time = parts[1]
+            }
             }
             if ($i ~ /^ppid=/) { sub(/ppid=/, "", $i); ppid = $i }
             if ($i ~ /^uid=/) { sub(/uid=/, "", $i); uid = $i }
@@ -295,13 +302,13 @@ find_related() {
     printf "════════════════════════════════════════\n"
 
     # Get parent PID
-    ppid=$(ausearch -p "$target_pid" -m SYSCALL -i 2>/dev/null | grep -oE 'ppid=[0-9]+' | head -1 | cut -d= -f2)
+    ppid=$($SCRIPT_DIR/ausearch-wrapper.sh -p "$target_pid" -m SYSCALL 2>/dev/null | grep -oE 'ppid=[0-9]+' | head -1 | cut -d= -f2)
 
     if [ -n "$ppid" ]; then
         # Find siblings (other processes with same parent)
-        ausearch -m SYSCALL -i 2>/dev/null | grep "ppid=$ppid" | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u | while read -r sibling_pid; do
+        $SCRIPT_DIR/ausearch-wrapper.sh -m SYSCALL 2>/dev/null | grep "ppid=$ppid" | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u | while read -r sibling_pid; do
             if [ "$sibling_pid" != "$target_pid" ]; then
-                exe=$(ausearch -p "$sibling_pid" -m SYSCALL -i 2>/dev/null | grep -oE 'exe="[^"]+"' | head -1 | cut -d'"' -f2)
+                exe=$($SCRIPT_DIR/ausearch-wrapper.sh -p "$sibling_pid" -m SYSCALL 2>/dev/null | grep -oE 'exe="[^"]+"' | head -1 | cut -d'"' -f2)
                 printf "  PID %s: %s\n" "$sibling_pid" "${exe:-unknown}"
             fi
         done
