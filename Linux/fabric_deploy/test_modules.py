@@ -210,7 +210,14 @@ class ModuleTester:
                 if verbose:
                     logger.info("Starting detailed action execution...")
                 results = self._apply_all_with_verbose_logging(module_instance, dry_run, verbose)
-                
+
+                # Save state if module supports it (e.g., python_bootstrap)
+                if not dry_run and hasattr(module_instance, 'save_state_from_results'):
+                    try:
+                        module_instance.save_state_from_results(results)
+                    except Exception as e:
+                        logger.warning(f"Failed to save module state: {e}")
+
                 # Display results
                 self._display_results(results)
                 

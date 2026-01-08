@@ -17,3 +17,24 @@
 # 192.168.1.15:root:mypass:2222:database     # Port + friendly name
 
 # Add your target hosts below with credentials:
+# Password auth (fails on servers with MaxAuthTries=1):
+10.0.0.5:root:lsiu_asdf_SAF1:rocky
+10.0.0.6:root:lsiu_asdf_SAF1:centos
+10.0.0.3:root:lsiu_asdf_SAF1:alpine
+10.0.0.4:root:lsiu_asdf_SAF1:fedora
+10.0.0.7:root:lsiu_asdf_SAF1:debian
+10.0.0.8:root:lsiu_asdf_SAF1:arch
+10.0.0.9:root:lsiu_asdf_SAF1:opensuse
+10.0.0.10:root:lsiu_asdf_SAF1:slackware
+10.0.0.11:root:lsiu_asdf_SAF1:gentoo
+
+# Key-based auth (works on all servers):
+# 10.0.0.5:root:keys/test-root-key.private:rocky
+# 10.0.0.6:root:keys/test-root-key.private:centos
+# 10.0.0.3:root:keys/test-root-key.private:alpine
+# 10.0.0.4:root:keys/test-root-key.private:fedora
+# 10.0.0.7:root:keys/test-root-key.private:debian
+# 10.0.0.8:root:keys/test-root-key.private:arch
+# 10.0.0.9:root:keys/test-root-key.private:opensuse
+# 10.0.0.10:root:keys/test-root-key.private:slackware
+# 10.0.0.11:root:keys/test-root-key.private:gentoo
