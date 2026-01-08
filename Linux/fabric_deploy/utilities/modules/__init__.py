@@ -5,6 +5,7 @@ Hardening modules for CCDC framework
 from .base import HardeningModule, HardeningCommand, HardeningResult, HardeningAction, CommandAction, PythonAction
 from .agent_account import AgentAccountModule
 from .package_installer import PackageInstallerModule
+from .python_bootstrap import PythonBootstrapModule
 from .logging_hardening import LoggingHardeningModule
 from .ssh_hardening import SSHHardeningModule
 from .firewall_hardening import FirewallHardeningModule, MODE_STRICT, MODE_ALLOW_INTERNET
@@ -20,6 +21,7 @@ __all__ = [
     'PythonAction',
     'AgentAccountModule',
     'PackageInstallerModule',
+    'PythonBootstrapModule',
     'LoggingHardeningModule',
     'SSHHardeningModule',
     'FirewallHardeningModule',
