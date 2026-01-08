@@ -731,6 +731,7 @@ AllowUsers {allowed_users_str}
                          f"(service {srv} reload || "
                          f"systemctl restart {srv} || "
                          f"/etc/init.d/{srv} restart || "
+                         f"rc-service {srv} reload || "
                          f"rc-service {srv} restart || "
                          f"/etc/rc.d/rc.{srv} restart)"
                      )

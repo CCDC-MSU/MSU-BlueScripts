@@ -41,7 +41,8 @@ def discover(c, host, user=None, key_file=None, password=None):
     connect_kwargs = {'allow_agent': False, 'look_for_keys': False, 'timeout': 90}
     config_overrides = {
         'sudo': {'password': None},
-        'load_ssh_configs': False  # Disable SSH config loading to avoid parse errors
+        'load_ssh_configs': False,  # Disable SSH config loading to avoid parse errors
+        'load_system_host_keys': False
     }
     
     if key_file:
@@ -127,7 +128,8 @@ def discover_all(c, hosts_file='hosts.txt'):
                 }
                 config_overrides = {
                     'sudo': {'password': None},
-                    'load_ssh_configs': False  # Disable SSH config loading
+                    'load_ssh_configs': False,  # Disable SSH config loading
+                    'load_system_host_keys': False
                 }
 
                 if server_creds.key_file:
