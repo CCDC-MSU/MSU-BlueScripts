@@ -29,6 +29,7 @@ KEYS_DIR = BASE_DIR / 'keys'
 # Output paths
 INVENTORY_DIR = SCRIPT_DIR / 'inventory'
 GROUP_VARS_DIR = SCRIPT_DIR / 'group_vars'
+PYTHON_STATE_FILE = SCRIPT_DIR / 'python_bootstrap_state.json'
 
 # Mapping of friendly names to OS families
 OS_FAMILY_MAP = {
@@ -115,8 +116,22 @@ def parse_hosts_file() -> list:
     return hosts
 
 
+def load_python_bootstrap_state() -> dict:
+    """Load Python bootstrap installation state"""
+    if PYTHON_STATE_FILE.exists():
+        try:
+            with open(PYTHON_STATE_FILE, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Warning: Failed to load Python bootstrap state: {e}")
+    return {}
+
+
 def generate_inventory(hosts: list) -> dict:
     """Generate Ansible inventory structure"""
+    # Load Python bootstrap state to determine which hosts have Python 3.12
+    python_state = load_python_bootstrap_state()
+
     inventory = {
         'all': {
             'children': {
@@ -133,9 +148,7 @@ def generate_inventory(hosts: list) -> dict:
                 },
                 'bsd': {'hosts': {}},
             },
-            'vars': {
-                # 'ansible_python_interpreter': '/root/python/bin/python3.12',
-            }
+            # No global ansible_python_interpreter - set per-host based on bootstrap state
         }
     }
 
@@ -154,6 +167,13 @@ def generate_inventory(hosts: list) -> dict:
         else:
             host_vars['ansible_password'] = h['password']
             host_vars['ansible_ssh_pass'] = h['password']
+
+        # Set ansible_python_interpreter only if Python 3.12 was successfully installed
+        host_ip = h['host']
+        if host_ip in python_state and python_state[host_ip].get('success'):
+            python_path = python_state[host_ip].get('python_path', '/root/python/bin/python3.12')
+            host_vars['ansible_python_interpreter'] = python_path
+        # Otherwise, omit it and let Ansible auto-discover Python
 
         family = h['os_family']
         name = h['name']
@@ -274,6 +294,27 @@ def main():
             count = len(data.get('hosts', {}))
             if count:
                 print(f"    - {group}: {count} hosts")
+
+        # Print Python bootstrap status
+        python_state = load_python_bootstrap_state()
+        if python_state:
+            print(f"\n  Python Bootstrap Status:")
+            successful = [ip for ip, data in python_state.items() if data.get('success')]
+            failed = [ip for ip, data in python_state.items() if not data.get('success')]
+            print(f"    - Python 3.12 installed: {len(successful)} hosts")
+            if successful:
+                for ip in successful[:3]:  # Show first 3
+                    print(f"      ✓ {ip}")
+                if len(successful) > 3:
+                    print(f"      ... and {len(successful) - 3} more")
+            if failed:
+                print(f"    - Auto-discovery fallback: {len(failed)} hosts")
+                for ip in failed:
+                    print(f"      ○ {ip} (will use system Python)")
+        else:
+            print(f"\n  Python Bootstrap Status: Not run yet")
+            print(f"    - Run 'uv run fab test-module --module=python_bootstrap --live' first")
+            print(f"    - Or it will run during 'uv run fab harden'")
     else:
         print("  - No hosts found!")
 

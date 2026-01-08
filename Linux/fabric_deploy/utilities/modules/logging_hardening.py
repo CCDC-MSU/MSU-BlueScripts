@@ -66,6 +66,15 @@ class LoggingHardeningModule(HardeningModule):
             f"echo 'Failed to enable {service}')"
         )
 
+    def _get_service_is_running_cmd(self, service: str) -> str:
+        """Check if a service is running across init systems"""
+        return (
+            f"(systemctl is-active {service} 2>/dev/null | grep -q '^active$' || "
+            f"service {service} status 2>/dev/null | grep -qiE 'running|started' || "
+            f"rc-service {service} status 2>/dev/null | grep -qi 'started' || "
+            f"pgrep -x {service} >/dev/null 2>&1)"
+        )
+
     def _get_ansible_hostname_for_ip(self, ip: str) -> str:
         """Look up the Ansible inventory hostname for a given IP address"""
         import yaml
@@ -391,7 +400,13 @@ class LoggingHardeningModule(HardeningModule):
             description="Set restrictive permissions on security logs",
             requires_sudo=True
         ))
-        
+
+        commands.append(HardeningCommand(
+            command=self._get_service_enable_cmd("rsyslog"),
+            description="Enable rsyslog service at boot",
+            requires_sudo=True
+        ))
+
         commands.append(HardeningCommand(
             command=self._get_service_restart_cmd("rsyslog"),
             description="Restart rsyslog service",
@@ -437,9 +452,9 @@ class LoggingHardeningModule(HardeningModule):
         
         if audit_rules:
             commands.append(HardeningCommand(
-                command=f'test -d /etc/audit && cat > /etc/audit/rules.d/ccdc.rules << "EOF"\n{audit_rules}\nEOF || echo "auditd not installed"',
+                command=f'test -d /etc/audit && mkdir -p /etc/audit/rules.d && cat > /etc/audit/rules.d/ccdc.rules << "EOF"\n{audit_rules}\nEOF || echo "auditd not installed"',
                 description="Configure audit rules for security monitoring",
-                check_command="test -f /etc/audit/rules.d/ccdc.rules && echo exists || echo not_applicable",
+                check_command="test -f /etc/audit/rules.d/ccdc.rules",
                 requires_sudo=True
             ))
         
@@ -448,9 +463,15 @@ class LoggingHardeningModule(HardeningModule):
             description="Load audit rules",
             requires_sudo=True
         ))
-        
+
         commands.append(HardeningCommand(
-            command=f"(pidof auditd >/dev/null || pgrep -x auditd >/dev/null) && {self._get_service_restart_cmd('auditd')} || echo 'auditd not running, skipping restart'",
+            command=f"test -d /etc/audit && {self._get_service_enable_cmd('auditd')} || echo 'auditd not installed'",
+            description="Enable auditd service at boot",
+            requires_sudo=True
+        ))
+
+        commands.append(HardeningCommand(
+            command=f"{self._get_service_is_running_cmd('auditd')} && {self._get_service_restart_cmd('auditd')} || echo 'auditd not running, skipping restart'",
             description="Restart auditd service",
             requires_sudo=True
         ))
@@ -513,7 +534,7 @@ class LoggingHardeningModule(HardeningModule):
         accton_cmd = (
             "if ! command -v auditctl >/dev/null && ! pgrep -x auditd >/dev/null; then "
             "  if command -v accton >/dev/null; then "
-            "    accton /var/log/pacct; "
+            "    mkdir -p /var/log && touch /var/log/pacct && accton /var/log/pacct; "
             "  else echo 'process accounting not available'; fi; "
             "else echo 'auditd present, skipping accton'; fi"
         )
@@ -605,6 +626,7 @@ class LoggingHardeningModule(HardeningModule):
         # We check if auditd is running/enabled using 'service auditd status'
         accton_cmd = (
             "if ! service auditd status >/dev/null 2>&1; then "
+            "  mkdir -p /var/account && touch /var/account/acct && "
             "  accton /var/account/acct 2>/dev/null || echo 'process accounting not configured'; "
             "else echo 'BSD Audit present, skipping accton'; fi"
         )

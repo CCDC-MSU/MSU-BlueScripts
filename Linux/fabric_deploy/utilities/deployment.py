@@ -14,6 +14,7 @@ from .models import ServerInfo
 from .modules import (
     HardeningModule, HardeningResult,
     AgentAccountModule,
+    PythonBootstrapModule,
     LoggingHardeningModule,
     SSHHardeningModule,
     FirewallHardeningModule,
@@ -71,13 +72,16 @@ DEFAULT_PIPELINE = [
     # 12. Packages & Tools (DISABLED)
     # PipelineStep('module', 'package_installer'),
 
-    # 13. Logging
+    # 13. Python Bootstrap (Install Python 3.12 for Ansible)
+    PipelineStep('module', 'python_bootstrap'),
+
+    # 14. Logging
     PipelineStep('module', 'logging_hardening'),
 
-    # 14. Final Lockdown (Return to Strict Mode)
+    # 15. Final Lockdown (Return to Strict Mode)
     PipelineStep('module', 'firewall_hardening'),
 
-    # 15. Final Snapshot
+    # 16. Final Snapshot
     PipelineStep('script', 'scripts/all/pre-hardening-snapshot.sh'),
 ]
 
@@ -106,6 +110,7 @@ class HardeningOrchestrator:
         modules = [
             AgentAccountModule(self.conn, self.server_info, self.os_family),
             # PackageInstallerModule(self.conn, self.server_info, self.os_family),
+            PythonBootstrapModule(self.conn, self.server_info, self.os_family),
             LoggingHardeningModule(self.conn, self.server_info, self.os_family),
             SSHHardeningModule(self.conn, self.server_info, self.os_family),
             # Strict mode firewall (default)
