@@ -42,7 +42,7 @@ def reset_ssh(c, hosts_file='hosts.txt', restart=True):
             try:
                 # Connection setup
                 connect_kwargs = {'allow_agent': False, 'look_for_keys': False, 'timeout': 90}
-                config_overrides = {'sudo': {'password': None}}
+                config_overrides = {'sudo': {'password': None}, 'load_system_host_keys': False}
                 if server_creds.key_file:
                     connect_kwargs['key_filename'] = server_creds.key_file
                 elif server_creds.password:

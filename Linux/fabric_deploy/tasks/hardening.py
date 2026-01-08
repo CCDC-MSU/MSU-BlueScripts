@@ -178,7 +178,8 @@ def harden(c, hosts_file='hosts.txt', dry_run=False, modules=None,
             }
             config_overrides = {
                 'sudo': {'password': None},
-                'load_ssh_configs': False
+                'load_ssh_configs': False,
+                'load_system_host_keys': False
             }
 
             if server_creds.key_file:
@@ -272,7 +273,7 @@ def harden(c, hosts_file='hosts.txt', dry_run=False, modules=None,
                     fallback_kwargs['port'] = server_creds.port
                 
                 # For root fallback, we don't need sudo password
-                fallback_config = Config(overrides={'load_ssh_configs': False})
+                fallback_config = Config(overrides={'load_ssh_configs': False, 'load_system_host_keys': False})
 
                 with Connection(server_creds.host, user='root',
                                config=fallback_config, connect_kwargs=fallback_kwargs) as conn:

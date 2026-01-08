@@ -11,6 +11,7 @@ from datetime import datetime
 from fabric import Connection
 
 
+from .operator_decision import OperatorDecisionManager
 class CriticalPipelineError(Exception):
     """Raised when a critical failure requires pipeline abort and manual intervention"""
     pass
@@ -240,7 +241,9 @@ class HardeningOrchestrator:
             self.conn.sudo(f"chmod +x {remote_path}")
             
             # 2. Execute
-            cmd = f"bash {remote_path}"
+            # Use discovered shell or fallback to sh (for Alpine/others without bash)
+            shell = getattr(self.server_info, 'default_shell', '/bin/sh') or '/bin/sh'
+            cmd = f"{shell} {remote_path}"
             extra_args = step.args.get('args', '')
             if extra_args:
                 cmd += f" {extra_args}"
@@ -282,6 +285,27 @@ class HardeningOrchestrator:
                 logger.error("Skipping reboot: Safe-to-reboot signal was not received (SSH hardening may have failed or not completed)")
                 return [HardeningResult(False, "reboot", "Safeguard: Reboot Skipped", error="safe_to_reboot flag is False")]
 
+            # Manual Verification Prompt
+            decision_manager = OperatorDecisionManager(self.conn.host, "reboot_safety_check")
+            options = {
+                "reboot": "I have verified the system is safe (SSH/Firewall ok) - Proceed with reboot",
+                "skip": "Skip reboot for now (I will reboot manually later)"
+            }
+
+            decision = decision_manager.request_decision(
+                issue="System is ready for reboot. Please verify you still have access before proceeding.",
+                options=options,
+                timeout=600  # Give them 10 minutes to verify
+            )
+
+            if decision == "skip":
+                 logger.warning("Operator chose to skip reboot.")
+                 return [HardeningResult(False, "reboot", "Operator Skipped Reboot", error="Operator decision: skip")]
+            elif decision is None:
+                 logger.error("Reboot decision timed out.")
+                 return [HardeningResult(False, "reboot", "Reboot Decision Timeout", error="Operator decision timeout")]
+
+            # If we get here, decision is 'reboot'
             try:
                 logger.info("Rebooting system...")
                 self.conn.sudo("reboot", warn=True)
@@ -298,11 +322,23 @@ class HardeningOrchestrator:
 
                 # Poll for reconnection with a fresh connection (host key may change)
                 from fabric import Connection, Config
+                import subprocess
+
+                creds = self.server_info.credentials
+
+                # Clear known_hosts entry to avoid mismatch errors if keys regenerated
+                try:
+                    subprocess.run(["ssh-keygen", "-R", creds.host], capture_output=True)
+                    # Also try IP if host is different
+                    if creds.host != self.conn.host:
+                         subprocess.run(["ssh-keygen", "-R", self.conn.host], capture_output=True)
+                except Exception as e:
+                    logger.warning(f"Failed to clear known_hosts: {e}")
+
                 deadline = time.time() + 300  # 5 minutes timeout
                 reconnected = False
                 
                 # Build fresh connection kwargs with host key checking disabled
-                creds = self.server_info.credentials
                 fresh_connect_kwargs = {
                     'allow_agent': False,
                     'look_for_keys': False,
