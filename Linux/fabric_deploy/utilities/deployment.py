@@ -10,6 +10,11 @@ from typing import Dict, List, Optional
 from datetime import datetime
 from fabric import Connection
 
+
+class CriticalPipelineError(Exception):
+    """Raised when a critical failure requires pipeline abort and manual intervention"""
+    pass
+
 from .models import ServerInfo
 from .modules import (
     HardeningModule, HardeningResult,
@@ -345,10 +350,25 @@ class HardeningOrchestrator:
                 
                 if not reconnected:
                     logger.error("Timed out waiting for system to reboot.")
-                    return [HardeningResult(False, "reboot", "System Reboot", error="Timed out waiting for host to come back")]
+                    logger.error("CRITICAL: Host is unreachable after reboot - manual intervention required!")
+                    logger.error(f"  Host: {creds.host}")
+                    logger.error(f"  Possible causes:")
+                    logger.error(f"    - Firewall rules locked out SSH")
+                    logger.error(f"    - System failed to boot")
+                    logger.error(f"    - Network configuration issue")
+                    logger.error(f"  Manual recovery steps:")
+                    logger.error(f"    1. Access via console/out-of-band management")
+                    logger.error(f"    2. Check firewall: firewall-cmd --set-default-zone=trusted && firewall-cmd --reload")
+                    logger.error(f"    3. Check SSH: systemctl status sshd")
+                    # Raise exception to abort pipeline - this host needs manual fix
+                    raise CriticalPipelineError(
+                        f"Host {creds.host} unreachable after reboot - requires manual intervention"
+                    )
 
                 return [HardeningResult(True, "reboot", "System Reboot")]
 
+            except CriticalPipelineError:
+                raise  # Re-raise to abort pipeline
             except Exception as e:
                 logger.warning(f"Reboot trigger or wait failed: {e}")
                 return [HardeningResult(False, "reboot", "System Reboot", error=str(e))]

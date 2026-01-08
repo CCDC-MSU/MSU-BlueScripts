@@ -267,8 +267,13 @@ class FirewallHardeningModule(HardeningModule):
         if self.active_backend == "iptables":
             revert_cmd = "iptables -F && iptables -P INPUT ACCEPT && iptables -P OUTPUT ACCEPT"
         elif self.active_backend == "firewalld":
-            # Fix: set back to trusted so reload restores an open state
-            revert_cmd = "firewall-cmd --set-default-zone=trusted && firewall-cmd --reload"
+            # Fix: set back to trusted so reload restores an open state (both persistent and runtime)
+            revert_cmd = (
+                "firewall-cmd --permanent --zone=trusted --remove-source=10.0.0.2 2>/dev/null; "
+                "firewall-cmd --permanent --zone=trusted --remove-source=100.18.6.211 2>/dev/null; "
+                "firewall-cmd --permanent --zone=trusted --remove-source=172.239.63.207 2>/dev/null; "
+                "firewall-cmd --set-default-zone=trusted && firewall-cmd --reload"
+            )
             # If using hybrid nftables mode, also cleanup the custom table
             if self.uses_hybrid_nftables:
                 revert_cmd = f"nft delete table inet ccdc_internet 2>/dev/null; {revert_cmd}"
@@ -469,15 +474,18 @@ class FirewallHardeningModule(HardeningModule):
             # 2. Reload to clear old runtime junk
             conn.sudo("firewall-cmd --reload", hide=True, timeout=30)
             
-            # 3. Configure Trusted Zone
-            # Add loopback interface to trusted zone (try/except in case of issues)
+            # 3. Configure Trusted Zone (BOTH permanent and runtime to survive reboots)
+            # Add loopback interface to trusted zone
+            conn.sudo("firewall-cmd --permanent --zone=trusted --add-interface=lo", warn=True, hide=True, timeout=30)
             conn.sudo("firewall-cmd --zone=trusted --add-interface=lo", warn=True, hide=True, timeout=30)
             
-            # Add Trusted IPs to trusted zone
+            # Add Trusted IPs to trusted zone (permanent + runtime)
             for ip in TRUSTED_IPS:
+                conn.sudo(f"firewall-cmd --permanent --zone=trusted --add-source={ip}", hide=True, timeout=30)
                 conn.sudo(f"firewall-cmd --zone=trusted --add-source={ip}", hide=True, timeout=30)
 
-            # Ensure SSH is explicitly allowed in trusted zone (redundancy)
+            # Ensure SSH is explicitly allowed in trusted zone (permanent + runtime)
+            conn.sudo("firewall-cmd --permanent --zone=trusted --add-service=ssh", warn=True, hide=True, timeout=30)
             conn.sudo("firewall-cmd --zone=trusted --add-service=ssh", warn=True, hide=True, timeout=30)
             
             # 4. Set Default Zone to Drop
