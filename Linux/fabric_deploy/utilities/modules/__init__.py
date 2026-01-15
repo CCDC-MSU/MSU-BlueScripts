@@ -5,32 +5,28 @@ Hardening modules for CCDC framework
 from .base import HardeningModule, HardeningCommand, HardeningResult, HardeningAction, CommandAction, PythonAction
 from .agent_account import AgentAccountModule
 from .package_installer import PackageInstallerModule
-from .installation_status import InstallationStatusModule
-from .logging_setup import LoggingSetupModule
+from .python_bootstrap import PythonBootstrapModule
+from .logging_hardening import LoggingHardeningModule
 from .ssh_hardening import SSHHardeningModule
-from .kernel_hardening import KernelHardeningModule
-from .firewall_hardening import FirewallHardeningModule
-from .service_hardening import ServiceHardeningModule
-from .file_permissions import FilePermissionsModule
-from .bash_scripts import BashScriptHardeningModule
+from .firewall_hardening import FirewallHardeningModule, MODE_STRICT, MODE_ALLOW_INTERNET
+from .shell_scripts import ShellScriptHardeningModule
 from .user_hardening import UserHardeningModule
 
 __all__ = [
     'HardeningModule',
-    'HardeningCommand', 
+    'HardeningCommand',
     'HardeningResult',
     'HardeningAction',
-    'CommandAction', 
+    'CommandAction',
     'PythonAction',
     'AgentAccountModule',
     'PackageInstallerModule',
-    'InstallationStatusModule',
-    'LoggingSetupModule',
+    'PythonBootstrapModule',
+    'LoggingHardeningModule',
     'SSHHardeningModule',
-    'KernelHardeningModule', 
     'FirewallHardeningModule',
-    'ServiceHardeningModule',
-    'FilePermissionsModule',
-    'BashScriptHardeningModule',
+    'MODE_STRICT',
+    'MODE_ALLOW_INTERNET',
+    'ShellScriptHardeningModule',
     'UserHardeningModule',
 ]

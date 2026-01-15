@@ -12,8 +12,71 @@ from typing import List
 import yaml
 from .models import ServerCredentials
 import re
+import socket
+from paramiko.ssh_exception import SSHException
 
 logger = logging.getLogger(__name__)
+
+
+def is_connection_reset(e):
+    """Check if exception is a connection reset (host hostile or blocking)"""
+    # Check for direct types
+    if isinstance(e, (EOFError, socket.error, ConnectionResetError)):
+        return True
+        
+    msg = str(e).lower()
+    # Check for ConnectionResetError or similar OS errors via message
+    if "connection reset by peer" in msg or "Errno 104" in msg or "errno 10054" in msg:
+        return True
+    
+    # Check for wrapped SSHException
+    if isinstance(e, SSHException):
+        if "connection reset" in msg or "eof" in msg:
+            return True
+            
+    return False
+
+
+def retry_on_connection_failure(max_retries=3, delay=2, backoff=2):
+    """Decorator to retry functions on connection failure"""
+    def decorator(func):
+        import time
+        from functools import wraps
+        
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            retries = 0
+            current_delay = delay
+            
+            while True:
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    if not is_connection_reset(e):
+                        raise
+                        
+                    retries += 1
+                    if retries > max_retries:
+                        logger.error(f"Function {func.__name__} failed after {max_retries} retries due to connection reset: {e}")
+                        raise
+                        
+                    logger.warning(f"Connection reset in {func.__name__}. Retrying in {current_delay}s... (Attempt {retries}/{max_retries})")
+                    time.sleep(current_delay)
+                    current_delay *= backoff
+                    
+                    # If the first argument is an object with a 'conn' attribute (like self.conn), 
+                    # try to re-open it if closed?
+                    # For now just let the retry happen, fabric constructs usually handle reconnect on next call if properly configured,
+                    # but explicit close might be needed if socket is dead.
+                    # We can try to inspect args[0] (self) if it has a conn attribute
+                    if args and hasattr(args[0], 'conn'):
+                        try:
+                            args[0].conn.close()
+                        except:
+                            pass
+                            
+        return wrapper
+    return decorator
 
 
 def load_config(config_file: str = None) -> dict:
@@ -29,10 +92,26 @@ def load_config(config_file: str = None) -> dict:
 
 
 def parse_hosts_file(hosts_file: str) -> List[ServerCredentials]:
-    """Parse hosts file with credentials per host"""
+    """Parse hosts file with credentials per host
+    
+    Supported formats:
+        host:user:password                       - password auth
+        host:user:keyfile                        - SSH key auth (if path-like)
+        host:user:password:port                  - custom port
+        host:user:password:friendly_name         - friendly name (starts with alpha)
+        host:user:password:port:friendly_name    - port and friendly name
+    """
     servers = []
     config = load_config()
     logger.info(f"Parsing hosts file: {hosts_file}")
+    
+    def _is_port(value: str) -> bool:
+        """Check if value looks like a port number"""
+        return value.isdigit()
+    
+    def _is_friendly_name(value: str) -> bool:
+        """Check if value looks like a friendly name (starts with alpha)"""
+        return value and value[0].isalpha()
     
     try:
         with open(hosts_file, 'r') as f:
@@ -44,43 +123,78 @@ def parse_hosts_file(hosts_file: str) -> List[ServerCredentials]:
                     continue
                 
                 try:
-                    # Parse different formats:
-                    # Format 1: host:user:password
-                    # Format 2: host:user:password:port
-                    # Format 3: host:user:key_file
-                    # Format 4: host (uses defaults from config)
-                    
+                    # Parse different formats
                     parts = line.split(':')
+                    
+                    host = None
+                    user = None
+                    password = None
+                    key_file = None
+                    port = 22
+                    friendly_name = None
                     
                     if len(parts) == 1:
                         # Just host, rely on SSH config or fabric defaults
-                        # We no longer pull defaults from config.yaml's connection section as requested
                         host = parts[0]
-                        # Use root/password defaults if they were in config (backward compat) but preferred is SSH key/config
                         user = config.get('connection', {}).get('user', 'root')
                         password = config.get('connection', {}).get('password')
-                        servers.append(ServerCredentials(host=host, user=user, password=password))
                         
                     elif len(parts) == 3:
                         # host:user:password_or_keyfile
                         host, user, auth = parts
-                        if auth.startswith('/') or auth.endswith('.pem') or auth.endswith('.key'):
-                            # Looks like a key file path
-                            servers.append(ServerCredentials(host=host, user=user, key_file=auth))
+                        if '/' in auth or auth.startswith('~') or auth.endswith('.pem') or auth.endswith('.key') or auth.endswith('.private'):
+                            key_file = auth
                         else:
-                            # Treat as password
-                            servers.append(ServerCredentials(host=host, user=user, password=auth))
+                            password = auth
                             
                     elif len(parts) == 4:
-                        # host:user:password:port
-                        host, user, password, port = parts
-                        servers.append(ServerCredentials(host=host, user=user, password=password, port=int(port)))
+                        # Could be:
+                        # - host:user:password:port (4th is numeric)
+                        # - host:user:password:friendly_name (4th starts with alpha)
+                        host, user, auth, fourth = parts
                         
+                        if '/' in auth or auth.startswith('~') or auth.endswith('.pem') or auth.endswith('.key') or auth.endswith('.private'):
+                            key_file = auth
+                        else:
+                            password = auth
+                        
+                        if _is_port(fourth):
+                            port = int(fourth)
+                        elif _is_friendly_name(fourth):
+                            friendly_name = fourth
+                        else:
+                            logger.warning(f"Ambiguous 4th field on line {line_num}: {fourth}")
+                            
+                    elif len(parts) == 5:
+                        # host:user:password:port:friendly_name
+                        host, user, auth, port_str, friendly_name = parts
+                        
+                        if '/' in auth or auth.startswith('~') or auth.endswith('.pem') or auth.endswith('.key') or auth.endswith('.private'):
+                            key_file = auth
+                        else:
+                            password = auth
+                        
+                        if _is_port(port_str):
+                            port = int(port_str)
+                        else:
+                            logger.warning(f"Invalid port on line {line_num}: {port_str}")
+                            continue
+                            
                     else:
                         logger.warning(f"Invalid host format on line {line_num}: {line}")
                         continue
-                        
-                    logger.debug(f"Added server: {host} (user: {user})")
+                    
+                    servers.append(ServerCredentials(
+                        host=host,
+                        user=user,
+                        password=password,
+                        key_file=key_file,
+                        port=port,
+                        friendly_name=friendly_name
+                    ))
+                    
+                    display = friendly_name if friendly_name else host
+                    logger.debug(f"Added server: {display} (host: {host}, user: {user})")
                     
                 except Exception as e:
                     logger.error(f"Error parsing line {line_num} in {hosts_file}: {e}")
@@ -151,7 +265,7 @@ def setup_logging(level: str = "INFO"):
 
 def generate_password() -> str:
     """Generate a password with 6 upper, 6 lower, and 4 symbols in random order."""
-    symbols = "!@#$%^&*()-_=+[]{}:,.?"
+    symbols = "!@#$%^&*()-_=+[]{}.,?"
     chars = (
         [secrets.choice(string.ascii_uppercase) for _ in range(6)]
         + [secrets.choice(string.ascii_lowercase) for _ in range(6)]

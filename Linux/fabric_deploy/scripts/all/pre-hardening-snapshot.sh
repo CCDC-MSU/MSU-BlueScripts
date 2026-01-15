@@ -3,7 +3,7 @@
 # System State Backup Script
 # Creates comprehensive backup before system hardening
 #
-
+# TO-DO: consider snaphotting home directories of all users
 
 BACKUP_ROOT="/root/pre-hardening-backups"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
@@ -62,6 +62,12 @@ backup_file() {
         log_warn "Not found: $src"
     fi
 }
+
+# ============================================================================
+# FULL /etc BACKUP
+# ============================================================================
+log_info "Backing up full /etc directory..."
+backup_file /etc
 
 # ============================================================================
 # USER AND AUTHENTICATION FILES

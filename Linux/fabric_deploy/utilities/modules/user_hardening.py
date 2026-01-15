@@ -13,10 +13,12 @@ from typing import Dict, List, Set, Tuple
 
 from .base import HardeningModule, HardeningCommand, PythonAction, HardeningResult
 from ..actions import UserManager
-from ..utils import generate_password
+from ..utils import generate_password, is_connection_reset
 
 logger = logging.getLogger(__name__)
 
+ROOT_KEY_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../keys/test-root-key.pub"))
+ROOT_KEY_PATH_PRIVATE = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../keys/test-root-key.private"))
 
 class UserHardeningModule(HardeningModule):
     """User account hardening based on users.json."""
@@ -38,11 +40,7 @@ class UserHardeningModule(HardeningModule):
         self.users_config = self._ensure_passwords_loaded()
         self.required_regular_users = self._get_user_set("regular_users")
         self.required_super_users = self._get_user_set("super_users")
-        self.do_not_change_users = self._get_user_set(
-            "dontchange_accounts",
-            "do_not_change_accounts",
-            "do_not_change_users",
-        )
+        self.do_not_change_users = self._get_user_set("do_not_change_users")
         overlap = self.required_regular_users & self.required_super_users
         if overlap:
             logger.warning(
@@ -77,7 +75,7 @@ class UserHardeningModule(HardeningModule):
         return {
             "regular_users": {},
             "super_users": {},
-            "dontchange_accounts": {
+            "do_not_change_users": {
                 "root": "system account",
                 "scan-agent": "do not change",
             },
@@ -115,19 +113,16 @@ class UserHardeningModule(HardeningModule):
 
             password_cache: Dict[str, str] = {}
             per_host_users: Set[str] = set()
-            changed = False
 
             def populate_passwords(
                 user_map: Dict[str, object],
             ) -> None:
-                nonlocal changed
                 for username, value in user_map.items():
                     if isinstance(value, str):
                         trimmed = value.strip()
                         if trimmed == self.PER_HOST_SENTINEL:
                             if value != self.PER_HOST_SENTINEL:
                                 user_map[username] = self.PER_HOST_SENTINEL
-                                changed = True
                             per_host_users.add(username)
                             continue
                         if trimmed:
@@ -138,27 +133,16 @@ class UserHardeningModule(HardeningModule):
                         password = generate_password()
                         user_map[username] = password
                         password_cache[username] = password
-                        changed = True
                         continue
 
                     password = str(value)
                     user_map[username] = password
                     password_cache[username] = password
-                    changed = True
 
             populate_passwords(regular_map)
             populate_passwords(super_map)
 
             per_host_users -= set(password_cache)
-
-            if changed:
-                try:
-                    with open(config_path, "w") as f:
-                        json.dump(config, f, indent=2)
-                        f.write("\n")
-                    logger.info("Updated users.json with generated passwords")
-                except OSError as exc:
-                    logger.error("Failed to update users.json: %s", exc)
 
             UserHardeningModule._password_cache = password_cache
             UserHardeningModule._per_host_users = per_host_users
@@ -186,8 +170,9 @@ class UserHardeningModule(HardeningModule):
         return sudo_users
 
     def _host_label(self) -> str:
-        label = self.server_info.credentials.host.replace(":", "_").replace("/", "_")
-        label = label.replace(" ", "_")
+        # Use friendly name if available, otherwise use host IP
+        base = self.server_info.credentials.display_name
+        label = base.replace(":", "_").replace("/", "_").replace(" ", "_")
         port = getattr(self.server_info.credentials, "port", 22)
         if port != 22:
             label = f"{label}_{port}"
@@ -216,9 +201,11 @@ class UserHardeningModule(HardeningModule):
         log_file = Path(log_path)
         log_file.parent.mkdir(parents=True, exist_ok=True)
 
+        creds = server_info.credentials
+        host_line = f"{creds.display_name} ({creds.host})" if creds.friendly_name else creds.host
         lines = [
             "User hardening password log",
-            f"Host: {server_info.credentials.host}",
+            f"Host: {host_line}",
             f"Generated: {self.run_timestamp}",
             "",
             "username\trole\tpassword",
@@ -236,6 +223,79 @@ class UserHardeningModule(HardeningModule):
             description="Write password log",
             output=str(log_file),
         )
+
+    def _configure_root_access(self, conn, server_info) -> HardeningResult:
+        """Read the local root key, append to remote authorized_keys, and update connection."""
+        if not os.path.exists(ROOT_KEY_PATH):
+            logger.warning("Root key not found at %s", ROOT_KEY_PATH)
+            return HardeningResult(False, "configure_root_access", "Check Root Key", error="Root key file missing")
+
+        try:
+            with open(ROOT_KEY_PATH, "r") as f:
+                key_content = f.read().strip()
+        except OSError as e:
+            return HardeningResult(False, "configure_root_access", "Read Root Key", error=str(e))
+
+        if not key_content:
+             return HardeningResult(False, "configure_root_access", "Read Root Key", error="Root key file empty")
+
+        import time
+        max_retries = 3
+        
+        for attempt in range(1, max_retries + 1):
+            try:
+                # 1. Ensure .ssh directory exists and has correct permissions
+                conn.run("mkdir -p /root/.ssh", hide=True)
+                conn.run("chmod 700 /root/.ssh", hide=True)
+                
+                # 2. Check if key exists, if not append it
+                check = conn.run(f"grep -Fq '{key_content}' /root/.ssh/authorized_keys", warn=True, hide=True)
+                if check.failed:
+                    conn.run(f"printf '\\n%s\\n' '{key_content}' >> /root/.ssh/authorized_keys", hide=True)
+                    conn.run("chmod 600 /root/.ssh/authorized_keys", hide=True)
+                    action_output = "Injected root key into authorized_keys"
+                else:
+                    action_output = "Root key already present"
+
+                # 3. Update Fabric connection to use the private key for future operations checking if not already using a key
+                # Check if we are already using a key configuration
+                current_keys = conn.connect_kwargs.get('key_filename')
+                already_using_key = bool(current_keys)
+                
+                if already_using_key:
+                     logger.info("Connection already configured with key(s), skipping connection update.")
+                     action_output += ". Key auth already configured."
+                elif os.path.exists(ROOT_KEY_PATH_PRIVATE):
+                    # Ensure key_filename is a list
+                    if 'key_filename' not in conn.connect_kwargs:
+                        conn.connect_kwargs['key_filename'] = []
+                    elif not isinstance(conn.connect_kwargs['key_filename'], list):
+                        conn.connect_kwargs['key_filename'] = [conn.connect_kwargs['key_filename']]
+                    
+                    # Add private key if not already present
+                    if ROOT_KEY_PATH_PRIVATE not in conn.connect_kwargs['key_filename']:
+                        conn.connect_kwargs['key_filename'].insert(0, ROOT_KEY_PATH_PRIVATE)
+                        logger.info(f"Updated Fabric connection to use private key: {ROOT_KEY_PATH_PRIVATE}")
+                        action_output += ". Updated connection to use private key."
+                else:
+                    logger.warning(f"Private key not found at {ROOT_KEY_PATH_PRIVATE}. Cannot update connection.")
+                    action_output += ". Warning: Private key missing locally."
+
+                return HardeningResult(True, "configure_root_access", "Configure Root Access", output=action_output)
+
+            except Exception as e:
+                is_reset = is_connection_reset(e)
+                error_msg = "Connection reset by peer" if is_reset else str(e)
+                
+                if attempt < max_retries:
+                    logger.warning(f"Attempt {attempt}/{max_retries} failed: {error_msg}. Retrying in 2s...")
+                    time.sleep(2)
+                    # Re-establish connection if it was a reset
+                    if is_reset:
+                        conn.close()
+                else:
+                    logger.error(f"Failed to configure root access after {max_retries} attempts: {error_msg}")
+                    return HardeningResult(False, "configure_root_access", "Configure Root Access", error=error_msg)
 
     def get_commands(self) -> List[HardeningCommand]:
         commands: List[HardeningCommand] = []
@@ -328,6 +388,7 @@ class UserHardeningModule(HardeningModule):
                 )
             )
 
+
         if password_records:
             commands.insert(
                 0,
@@ -338,6 +399,16 @@ class UserHardeningModule(HardeningModule):
                     requires_sudo=False,
                 ),
             )
+
+        # Insert Root Access Configuration at the very beginning
+        commands.insert(
+            0,
+            PythonAction(
+                function=self._configure_root_access,
+                description="Ensure root recovery key is authorized and update connection",
+                requires_sudo=True
+            )
+        )
 
         return commands
 

@@ -53,7 +53,7 @@ class ModuleTester:
         
     def _connect_to_host(self, server_creds):
         """Establish connection to host"""
-        connect_kwargs = {'allow_agent':False,'look_for_keys':False }
+        connect_kwargs = {'allow_agent': False, 'look_for_keys': False, 'timeout': 90}
         config_overrides = {
             'sudo': {'password': None},
             'load_ssh_configs': False
@@ -210,7 +210,14 @@ class ModuleTester:
                 if verbose:
                     logger.info("Starting detailed action execution...")
                 results = self._apply_all_with_verbose_logging(module_instance, dry_run, verbose)
-                
+
+                # Save state if module supports it (e.g., python_bootstrap)
+                if not dry_run and hasattr(module_instance, 'save_state_from_results'):
+                    try:
+                        module_instance.save_state_from_results(results)
+                    except Exception as e:
+                        logger.warning(f"Failed to save module state: {e}")
+
                 # Display results
                 self._display_results(results)
                 
@@ -339,7 +346,7 @@ class ModuleTester:
             raise TimeoutError(f"Action timed out after {timeout} seconds")
 
         if threading.current_thread() is not threading.main_thread():
-            logger.warning("Timeout disabled (non-main thread)")
+            # logger.warning("Timeout disabled (non-main thread)")
             return module_instance.apply_action(action)
         
         # Set up timeout for non-dry runs

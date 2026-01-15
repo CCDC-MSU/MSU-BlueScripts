@@ -1,0 +1,45 @@
+---
+# Main tasks for logging_setup role
+# Handles cross-distro logging configuration
+
+- name: Include OS-specific variables
+  include_vars: "{{ item }}"
+  with_first_found:
+    - files:
+        - "{{ ansible_os_family | lower }}.yaml"
+        - "{{ ansible_distribution | lower }}.yaml"
+        - "default.yaml"
+      paths:
+        - "{{ role_path }}/vars"
+
+- name: Setup rsyslog
+  block:
+    - name: Install rsyslog
+      include_tasks: install_rsyslog.yaml
+
+    - name: Configure rsyslog
+      include_tasks: configure_rsyslog.yaml
+  when: ansible_system == 'Linux'
+
+- name: Setup journald (systemd systems)
+  include_tasks: configure_journald.yaml
+  when:
+    - ansible_system == 'Linux'
+    - ansible_service_mgr == 'systemd'
+
+- name: Setup auditd
+  block:
+    - name: Install auditd
+      include_tasks: install_auditd.yaml
+
+    - name: Configure auditd
+      include_tasks: configure_auditd.yaml
+  when: ansible_system == 'Linux'
+
+- name: Configure logrotate
+  include_tasks: configure_logrotate.yaml
+  when: ansible_system == 'Linux'
+
+- name: Configure security logging extras
+  include_tasks: security_extras.yaml
+  when: ansible_system == 'Linux'

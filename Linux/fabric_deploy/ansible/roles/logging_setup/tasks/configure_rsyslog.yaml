@@ -1,0 +1,59 @@
+---
+# Configure rsyslog
+
+- name: Check if rsyslog is available
+  command: command -v rsyslogd
+  register: rsyslog_available
+  changed_when: false
+  failed_when: false
+
+- name: Configure rsyslog
+  when: rsyslog_available.rc == 0
+  block:
+    - name: Backup rsyslog configuration
+      copy:
+        src: /etc/rsyslog.conf
+        dest: "/etc/rsyslog.conf.backup.{{ ansible_date_time.epoch }}"
+        remote_src: yes
+      failed_when: false
+
+    - name: Ensure rsyslog.d directory exists
+      file:
+        path: /etc/rsyslog.d
+        state: directory
+        mode: '0755'
+
+    - name: Deploy CCDC rsyslog configuration
+      template:
+        src: rsyslog-ccdc.conf.j2
+        dest: /etc/rsyslog.d/ccdc-security.conf
+        mode: '0644'
+      notify: restart rsyslog
+
+    - name: Create security log files
+      file:
+        path: "{{ item }}"
+        state: touch
+        mode: '0640'
+        owner: root
+        group: root
+        modification_time: preserve
+        access_time: preserve
+      loop:
+        - /var/log/auth.log
+        - /var/log/kern.log
+        - /var/log/daemon.log
+        - /var/log/ssh.log
+        - /var/log/sudo.log
+      failed_when: false
+
+    - name: Set permissions on secure log
+      file:
+        path: /var/log/secure
+        state: touch
+        mode: '0640'
+        owner: root
+        group: root
+        modification_time: preserve
+        access_time: preserve
+      failed_when: false

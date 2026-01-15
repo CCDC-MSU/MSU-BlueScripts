@@ -1,0 +1,81 @@
+#
+# CCDC Hardened SSH Configuration
+#
+
+# Enforce Protocol 2 and listen on all interfaces
+Protocol 2
+ListenAddress 0.0.0.0
+ListenAddress ::
+
+# Strong Host Keys
+HostKey /etc/ssh/ssh_host_ed25519_key
+HostKey /etc/ssh/ssh_host_rsa_key
+
+# Logging and Auditing
+SyslogFacility AUTH
+LogLevel VERBOSE
+
+# Authentication
+LoginGraceTime 30s
+PermitRootLogin prohibit-password
+StrictModes yes
+MaxAuthTries 3
+MaxSessions 5
+PubkeyAuthentication yes
+AuthorizedKeysFile .ssh/authorized_keys
+
+# Disable insecure authentication methods
+PasswordAuthentication yes  # we need it as scoring checks use password auth
+PermitEmptyPasswords no
+ChallengeResponseAuthentication yes
+KerberosAuthentication no   # set to yes for kerboros kdc
+GSSAPIAuthentication no     # set to yes for single sign on
+HostbasedAuthentication no
+IgnoreRhosts yes
+RhostsAuthentication no
+RhostsRSAAuthentication no
+
+# Strong Cryptography
+Ciphers aes256-gcm@openssh.com,chacha20-poly1305@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr
+MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,umac-128-etm@openssh.com
+KexAlgorithms sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org,ecdh-sha2-nistp521,ecdh-sha2-nistp384,ecdh-sha2-nistp256
+HostKeyAlgorithms ssh-ed25519-cert-v01@openssh.com,ssh-ed25519,ecdsa-sha2-nistp521-cert-v01@openssh.com,ecdsa-sha2-nistp384-cert-v01@openssh.com,ecdsa-sha2-nistp256-cert-v01@openssh.com,rsa-sha2-512,rsa-sha2-256
+
+# User and Group Access Control
+AllowUsers <user1> <user2>
+AllowGroups ssh-users
+
+# Session and Forwarding Restrictions
+UsePAM yes
+AllowAgentForwarding no
+AllowTcpForwarding no
+X11Forwarding no
+UsePrivilegeSeparation sandbox
+UseDNS no
+
+# Client Keep-Alive
+ClientAliveInterval 300
+ClientAliveCountMax 2
+
+# Environment
+AcceptEnv LANG LC_*
+
+# Threat hunting
+Match User <users present on machine but not in users.json (these are most likely either system users or malicious users)>
+    # Prevent forced commands
+    PermitTTY yes
+    ForceCommand /bin/honeypot
+    
+    # Disable file transfer
+    ChrootDirectory none
+    
+    # Disable dangerous features
+    AllowTcpForwarding no
+    X11Forwarding no
+    PermitTunnel no
+    GatewayPorts no
+    AllowAgentForwarding no
+    PermitOpen none
+    
+    # Disable SFTP/SCP
+    ForceCommand /bin/honeypot

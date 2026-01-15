@@ -1,21 +1,20 @@
 {
   "regular_users": {
-    "alex": "preset_password_here_neet1337",
-    "blair": "xxxxx",
+    "alex": "",
+    "blair": "",
     "casey": "",
     "devon": "",
     "jordan": "",
     "morgan": "",
-    "quinn": "",
-    "riley": "__PER_HOST__"
+    "quinn": ""
   },
   "super_users": {
     "sam": "",
-    "taylor": ""
+    "taylor": "",
+    "root": "__PER_HOST__"
   },
   "do_not_change_users": {
     "black-team-acc": "do not change password",
-    "root": "don't mess with root while testing",
     "scan-agent": "added by the hardenig script"
   }
 }

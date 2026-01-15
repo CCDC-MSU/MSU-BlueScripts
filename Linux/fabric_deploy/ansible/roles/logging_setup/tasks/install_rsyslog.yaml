@@ -1,0 +1,95 @@
+---
+# Install rsyslog across different distributions
+
+- name: Check if rsyslog is installed
+  command: command -v rsyslogd
+  register: rsyslog_check
+  changed_when: false
+  failed_when: false
+
+- name: Install rsyslog (Debian/Ubuntu)
+  apt:
+    name: rsyslog
+    state: present
+    update_cache: yes
+  when:
+    - rsyslog_check.rc != 0
+    - ansible_os_family == 'Debian'
+
+- name: Install rsyslog (RedHat/CentOS/Fedora)
+  dnf:
+    name: rsyslog
+    state: present
+  when:
+    - rsyslog_check.rc != 0
+    - ansible_os_family == 'RedHat'
+
+- name: Install rsyslog (Alpine)
+  apk:
+    name: rsyslog
+    state: present
+    update_cache: yes
+  when:
+    - rsyslog_check.rc != 0
+    - ansible_os_family == 'Alpine'
+
+- name: Install rsyslog (Arch)
+  block:
+    - name: Try installing rsyslog from community repo
+      community.general.pacman:
+        name: rsyslog
+        state: present
+        update_cache: yes
+  rescue:
+    - name: Rsyslog not available on Arch - using journald only
+      debug:
+        msg: "rsyslog not in Arch repos - will rely on journald"
+      changed_when: false
+  when:
+    - rsyslog_check.rc != 0
+    - ansible_os_family == 'Archlinux'
+
+- name: Install rsyslog (openSUSE)
+  community.general.zypper:
+    name: rsyslog
+    state: present
+  when:
+    - rsyslog_check.rc != 0
+    - ansible_os_family == 'Suse'
+
+- name: Install rsyslog (Gentoo)
+  portage:
+    name: app-admin/rsyslog
+    state: present
+  when:
+    - rsyslog_check.rc != 0
+    - ansible_os_family == 'Gentoo'
+
+- name: Install rsyslog (Slackware)
+  block:
+    - name: Check for sbopkg
+      command: command -v sbopkg
+      register: sbopkg_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install rsyslog via sbopkg
+      command: sbopkg -B -e -i rsyslog
+      when: sbopkg_check.rc == 0
+      register: slack_rsyslog
+
+    - name: Warn if rsyslog not available on Slackware
+      debug:
+        msg: "rsyslog not available - will rely on syslogd"
+      when: sbopkg_check.rc != 0
+  when:
+    - rsyslog_check.rc != 0
+    - ansible_distribution == 'Slackware'
+
+- name: Enable and start rsyslog
+  service:
+    name: rsyslog
+    state: started
+    enabled: yes
+  failed_when: false
+  when: rsyslog_check.rc == 0 or ansible_os_family not in ['Archlinux']

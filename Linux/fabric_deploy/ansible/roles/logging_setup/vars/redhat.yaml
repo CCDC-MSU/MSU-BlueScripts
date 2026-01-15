@@ -1,0 +1,8 @@
+---
+# RedHat family variables
+
+rsyslog_package: rsyslog
+auditd_package: audit
+
+rsyslog_service: rsyslog
+auditd_service: auditd

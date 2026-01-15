@@ -1,0 +1,96 @@
+# CCDC Fabric Hardening System: Blue Team Guide
+**"Run and Forget" Automated Defense**
+
+## 1. Introduction
+This system is designed to **automatically discover, profile, and secure** our remote Linux/Unix/BSD systems. This tool provides an automated way to harden users (proper sudoers access, change passwords), harden ssh and more.
+
+**Philosophy**:
+- **Automated**: One command to harden all Linux/bsd hosts.
+- **Idempotent**: Can be run multiple times without breaking things.
+- **Safe**: Includes built-in connection tests and "Dead Man's Switches" to prevent locking ourselves out.
+
+---
+
+## 2. The Setup (T-30 Minutes)
+We will setup everything on one of the jump boxes. This includes cloning the repo, and putting in place the required configs/keys.
+
+### `hosts.txt`
+The inventory of our target systems. This inventory will be gathered from the packet provided to us.
+```text
+# Format: IP:User:Password:FriendlyName
+192.168.1.10:root:password123:Web-Server
+192.168.1.20:admin:adminpass:Database
+```
+*Tip: Use the `FriendlyName` (e.g., "Web-Server") to make logs/reports readable.*
+
+### `users.json`
+The central authority for user management. This file dicates what users exist on the system, and again the information can be gathered from the packet provided.
+- **regular_users**: Standard team accounts (e.g., individual Blue Team members).
+- **super_users**: Admin/Sudo accounts (all the admin users (includes root and blue-team-agent)).
+- **do_not_change_users**: Black team accounts that we should not touch
+
+### `keys/root-key`
+This key will be added to /root/.ssh/authorized_keys ensuring that root has a non password way to access the machine (this is important as ssh hardening attemps to block password auth for the root user)
+---
+
+## 3. The Workflow (Automated)
+
+### The "One-Click" Method
+We have consolidated discovery, lockdown, and hardening into a single pipeline.
+```bash
+fab harden
+```
+*(Runs in parallel on all hosts defined in `hosts.txt`)*
+
+**What actually happens (The Pipeline):**
+1.  **Discovery**: Automatically profiles the system (OS, Users, Services) to decide which commands to run.
+2.  **Snapshot**: Backs up critical files and system state to `/root/pre-hardening-snapshot/`.
+3.  **User Hardening (Round 1)**: 
+    - Changes passwords for all users (except those in `do_not_change_users`) to prevent immediate access by Red Team.
+    - Saves new passwords to `logs/user-hardening/<host>/passwords_<date>.txt`.
+4.  **Firewall (Strict Mode)**: 
+    - Installing/Enabling the appropriate firewall (ufw/firewalld/iptables/nftables/pf/ipfw).
+    - Blocks ALL traffic except SSH from our Trusted IPs (inbound and outbound).
+    - Uses Dead Man's Switch for safety (auto-reverts if connection lost).
+5.  **SSH Hardening**: 
+    - Configures `sshd_config` (Protocol 2, PubKey only).
+    - Sets up "Honeypot Traps" for suspicious users.    (max of 2 per system, check Linux/fabric_deploy/utilities/modules/ssh_hardening.py and /home/antimony/Desktop/cyber/repos/MSU-BlueScripts/Linux/fabric_deploy/scripts/helpers/blue-sweet-tooth.sh for more information)
+    - **Dead Man's Switch**: Reverts changes if connection is lost.
+6.  **Script Uploads**: Pushes helper scripts to `/root/scripts`.
+7.  **Reboot**: Clears memory-resident malware.
+8.  **Discovery (Refresh)**: Re-profiles the system after reboot.
+9.  **User Hardening (Round 2)**: Rotates passwords *again* post-reboot to ensure no malware captured them.
+10. **Firewall (Allow Internet Mode)**: Opens outbound HTTP/HTTPS/DNS/NTP/SMTP for **root user only** to enable package updates. (everything up to this point should take no more than a couple of minutes)
+11. **Install & Update**: Installs various packages, and updates packages.
+12. **Logging Setup**: Configures `auditd` and `rsyslog` for deep visibility.
+13. **Firewall (Final Lockdown)**: Returns to strict mode, blocking all traffic except trusted IPs.
+14. **Final Snapshot**: Captures the hardened state.
+
+---
+
+## 4. Operational Maintenance
+
+### Viewing Logs & Reports
+*   **Logs**: `logs/harden/<friendly_name>/<timestamp>.log` - Detailed execution logs.
+*   **Logs**: `/root/script-logs/{scriptname}-{time}.log` - Contains the stdout from the individual scripts ran. (think find_media.sh or environment-variable-scanner.sh)
+*   **Reports**: `reports/<friendly_name>/<timestamp>.md` - High-level summary for the team.
+    *   *Check this report for a concise list of what changed on your box!*
+
+### Next steps
+*   **Run tools**: Run tools uploaded to `/root/tools/` (an example would be diff-changes.sh) this shows you a diff for the important files against the snapshots taken previously.
+*   **Harden services**: Figure out what's running, harden it (don't forget to change passwords)
+*   **Open up to traffic**: Now you can allow scoring engines to reach your machines
+*   **Watch logs**: Hopefully everything went smoothly and now all you have to do is look at the logs, hunt for threats and complete injects!
+
+### Troubleshooting
+1.  **"Hardening pipeline failed on Host Y"**
+    *   Unfortunately there is no way to completely automate every single possible configuration of Linux/ BSD environments, so we must be ready in case automated hardening fails.
+    *   The system is modular; failure in one step (e.g., logging) often allows others to complete.
+    *   Coordinate with the one running the automated hardening tool to see which steps failed, and complete them manually.
+
+---
+
+**Summary**:
+1.  **Update Configs** (`hosts.txt`, `users.json`).
+2.  **Run** (`fab harden`).
+3.  **Verify** (Check `reports/`).

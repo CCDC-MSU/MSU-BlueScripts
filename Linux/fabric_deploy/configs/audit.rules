@@ -1,0 +1,136 @@
+## Auditd Rules - CCDC Competition Ready (Safe/Broad Mode)
+## =======================================================
+##
+## This config is designed to be:
+## 1. Universal: Works on Debian, Ubuntu, CentOS, RHEL, Alpine.
+## 2. Crash-Proof: No specific file watches that fail if the file is missing.
+## 3. High-Fidelity: Uses recursive watches to catch persistence anywhere.
+##
+## INSTALLATION:
+## 1. Copy content to /etc/audit/rules.d/audit.rules (or /etc/audit/audit.rules)
+## 2. Run: augenrules --load   (or: service auditd restart)
+## 3. Check for errors: ausearch -m DAEMON_ERR
+##
+
+## ============================================================
+## 1. BUFFER & CONFIGURATION
+## ============================================================
+## Remove all existing rules
+-D
+
+## Increase buffer size to handle high load (prevent event loss)
+-b 8192
+
+## Failure mode (1=printk, 2=panic). 1 is safer for competitions.
+-f 1
+
+## ============================================================
+## 2. EXCLUSIONS (NOISE REDUCTION)
+## ============================================================
+-a always,exclude -F msgtype=AVC
+-a always,exclude -F msgtype=CRYPTO_KEY_USER
+-a always,exclude -F msgtype=CWD
+-a always,exclude -F msgtype=EOE
+
+## Cron noise reduction (safe to ignore cron daemon context)
+-a never,user -F subj_type=crond_t
+-a never,exit -F subj_type=crond_t
+
+## Safe filesystem exclusions
+-a never,filesystem -F fstype=debugfs
+-a never,filesystem -F fstype=tracefs
+
+## ============================================================
+## 3. COMMAND EXECUTION (THE CATCH-ALL)
+## ============================================================
+## Capture EVERY command executed by a user (uid >= 1000)
+## This replaces watching specific tools like nmap, nc, docker, etc.
+## If they run it, we catch it.
+-a always,exit -F arch=b64 -S execve -F auid>=1000 -F auid!=-1 -k exec_log
+-a always,exit -F arch=b32 -S execve -F auid>=1000 -F auid!=-1 -k exec_log
+
+## Capture command execution by Web Server users (www-data/apache/nginx)
+## Common UIDs: 33(www-data), 48(apache), 987(nginx - varies)
+-a always,exit -F arch=b64 -S execve -F euid=33 -k web_exec
+-a always,exit -F arch=b64 -S execve -F euid=48 -k web_exec
+-a always,exit -F arch=b32 -S execve -F euid=33 -k web_exec
+-a always,exit -F arch=b32 -S execve -F euid=48 -k web_exec
+
+## ============================================================
+## 4. PRIVILEGE ESCALATION
+## ============================================================
+## Detect when a non-root user executes a command as root (euid=0)
+-a always,exit -F arch=b64 -S execve -F euid=0 -F auid>=1000 -F auid!=-1 -k privesc_root
+-a always,exit -F arch=b32 -S execve -F euid=0 -F auid>=1000 -F auid!=-1 -k privesc_root
+
+## ============================================================
+## 5. NETWORK & SHELL
+## ============================================================
+## Network Connections (Connect & Listen)
+## Good for detecting Reverse Shells and C2 beacons
+-a always,exit -F arch=b64 -S connect -F a2=16 -F success=1 -k net_outbound
+-a always,exit -F arch=b32 -S connect -F a2=16 -F success=1 -k net_outbound
+-a always,exit -F arch=b64 -S listen -F success=1 -k net_listen
+-a always,exit -F arch=b32 -S listen -F success=1 -k net_listen
+
+## Fileless Malware / Memory Injection
+-a always,exit -F arch=b64 -S memfd_create -k mem_exec_fileless
+-a always,exit -F arch=b32 -S memfd_create -k mem_exec_fileless
+-a always,exit -F arch=b64 -S ptrace -k process_inject
+-a always,exit -F arch=b32 -S ptrace -k process_inject
+
+## ============================================================
+## 6. CRITICAL IDENTITY WATCHES
+## ============================================================
+## These are specific so they get a scary "ALERT" tag.
+## Watching these specifically takes precedence over the /etc wildcard.
+-w /etc/shadow -p wa -k alert_shadow_mod
+-w /etc/gshadow -p wa -k alert_shadow_mod
+-w /etc/passwd -p wa -k alert_passwd_mod
+-w /etc/group -p wa -k alert_group_mod
+-w /etc/sudoers -p wa -k alert_sudoers_mod
+-w /root/.ssh -p wa -k alert_root_ssh
+
+## ============================================================
+## 7. BROAD RECURSIVE WATCHES (THE "SAFE" METHOD)
+## ============================================================
+
+## Watch /etc recursively
+## Catches: Cron, Systemd, SSH Config, PAM, Hosts, Resolv.conf, Init.d
+## Actions: w (write), a (attribute change - chmod/chown)
+-w /etc/ -p wa -k etc_config_change
+
+## Watch Web Directory recursively
+## Catches: Webshell uploads, modifying index.php
+-w /var/www/ -p wa -k web_content_mod
+
+## Watch Binary Directories recursively
+## Catches: Backdooring ls, ps, ssh, or dropping new binaries
+## NOTE: We only watch 'wa' (Write/Attr). Watching 'x' here would kill the CPU.
+-w /bin/ -p wa -k bin_modify
+-w /sbin/ -p wa -k bin_modify
+-w /usr/bin/ -p wa -k bin_modify
+-w /usr/sbin/ -p wa -k bin_modify
+-w /usr/local/bin/ -p wa -k bin_modify
+-w /usr/local/sbin/ -p wa -k bin_modify
+
+## Watch for Log Tampering
+-w /var/log/audit/ -p wa -k log_tamper
+
+## ============================================================
+## 8. ANTI-FORENSICS & KERNEL
+## ============================================================
+## Time Stomping
+-a always,exit -F arch=b64 -S adjtimex,settimeofday,clock_settime -k time_change
+-a always,exit -F arch=b32 -S adjtimex,settimeofday,clock_settime -k time_change
+
+## Kernel Module Loading (Rootkits)
+-a always,exit -F arch=b64 -S init_module,finit_module,delete_module -k kernel_mod
+-a always,exit -F arch=b32 -S init_module,finit_module,delete_module -k kernel_mod
+
+## ============================================================
+## 9. LOCK
+## ============================================================
+## Make rules immutable. Requires reboot to change.
+## Set to 2 for competition/production.
+-e 2

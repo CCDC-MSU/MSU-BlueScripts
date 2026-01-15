@@ -1,0 +1,244 @@
+---
+# Install logging packages ONLY (no configuration)
+# Called by Fabric logging_setup module before configuration
+#
+# Usage:
+#   ansible-playbook playbooks/install_logging_packages.yaml --limit=<hostname>
+
+- name: Install logging packages
+  hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+    # ==================== RSYSLOG ====================
+    - name: Check if rsyslog is installed
+      command: command -v rsyslogd
+      register: rsyslog_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install rsyslog (Debian/Ubuntu)
+      apt:
+        name: rsyslog
+        state: present
+        update_cache: yes
+      when:
+        - rsyslog_check.rc != 0
+        - ansible_os_family == 'Debian'
+
+    - name: Install rsyslog (RedHat/CentOS/Fedora)
+      dnf:
+        name: rsyslog
+        state: present
+      when:
+        - rsyslog_check.rc != 0
+        - ansible_os_family == 'RedHat'
+
+    - name: Install rsyslog (Alpine)
+      apk:
+        name: rsyslog
+        state: present
+        update_cache: yes
+      when:
+        - rsyslog_check.rc != 0
+        - ansible_os_family == 'Alpine'
+
+    - name: Install rsyslog (Arch) - skip if not in repos
+      block:
+        - community.general.pacman:
+            name: rsyslog
+            state: present
+            update_cache: yes
+      rescue:
+        - debug:
+            msg: "rsyslog not in Arch repos - will use journald"
+      when:
+        - rsyslog_check.rc != 0
+        - ansible_os_family == 'Archlinux'
+
+    - name: Install rsyslog (openSUSE)
+      community.general.zypper:
+        name: rsyslog
+        state: present
+      when:
+        - rsyslog_check.rc != 0
+        - ansible_os_family == 'Suse'
+
+    - name: Install rsyslog (Gentoo)
+      portage:
+        name: app-admin/rsyslog
+        state: present
+      when:
+        - rsyslog_check.rc != 0
+        - ansible_os_family == 'Gentoo'
+
+    - name: Install rsyslog (Slackware) - check sbopkg
+      block:
+        - command: command -v sbopkg
+          register: sbopkg_check
+          changed_when: false
+          failed_when: false
+        - command: sbopkg -B -e -i rsyslog
+          when: sbopkg_check.rc == 0
+        - debug:
+            msg: "rsyslog not available on Slackware base - using syslogd"
+          when: sbopkg_check.rc != 0
+      when:
+        - rsyslog_check.rc != 0
+        - ansible_distribution == 'Slackware'
+
+    # ==================== AUDITD ====================
+    - name: Check if auditd is installed
+      command: command -v auditctl
+      register: auditd_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install auditd (Debian/Ubuntu)
+      apt:
+        name: auditd
+        state: present
+        update_cache: yes
+      when:
+        - auditd_check.rc != 0
+        - ansible_os_family == 'Debian'
+
+    - name: Install auditd (RedHat/CentOS/Fedora)
+      dnf:
+        name: audit
+        state: present
+      when:
+        - auditd_check.rc != 0
+        - ansible_os_family == 'RedHat'
+
+    - name: Install auditd (Alpine)
+      apk:
+        name: audit
+        state: present
+        update_cache: yes
+      when:
+        - auditd_check.rc != 0
+        - ansible_os_family == 'Alpine'
+
+    - name: Install auditd (Arch)
+      community.general.pacman:
+        name: audit
+        state: present
+        update_cache: yes
+      when:
+        - auditd_check.rc != 0
+        - ansible_os_family == 'Archlinux'
+
+    - name: Install auditd (openSUSE)
+      community.general.zypper:
+        name: audit
+        state: present
+      when:
+        - auditd_check.rc != 0
+        - ansible_os_family == 'Suse'
+
+    - name: Install auditd (Gentoo)
+      portage:
+        name: sys-process/audit
+        state: present
+      when:
+        - auditd_check.rc != 0
+        - ansible_os_family == 'Gentoo'
+
+    - name: Install auditd (Slackware) - check sbopkg
+      block:
+        - command: command -v sbopkg
+          register: sbopkg_audit_check
+          changed_when: false
+          failed_when: false
+        - command: sbopkg -B -e -i audit
+          when: sbopkg_audit_check.rc == 0
+        - debug:
+            msg: "audit not available on Slackware base"
+          when: sbopkg_audit_check.rc != 0
+      when:
+        - auditd_check.rc != 0
+        - ansible_distribution == 'Slackware'
+
+    # ==================== LOGROTATE ====================
+    - name: Check if logrotate is installed
+      command: command -v logrotate
+      register: logrotate_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install logrotate (Debian)
+      apt:
+        name: logrotate
+        state: present
+      when:
+        - logrotate_check.rc != 0
+        - ansible_os_family == 'Debian'
+
+    - name: Install logrotate (RedHat)
+      dnf:
+        name: logrotate
+        state: present
+      when:
+        - logrotate_check.rc != 0
+        - ansible_os_family == 'RedHat'
+
+    - name: Install logrotate (Alpine)
+      apk:
+        name: logrotate
+        state: present
+      when:
+        - logrotate_check.rc != 0
+        - ansible_os_family == 'Alpine'
+
+    - name: Install logrotate (Arch)
+      community.general.pacman:
+        name: logrotate
+        state: present
+      when:
+        - logrotate_check.rc != 0
+        - ansible_os_family == 'Archlinux'
+
+    - name: Install logrotate (openSUSE)
+      community.general.zypper:
+        name: logrotate
+        state: present
+      when:
+        - logrotate_check.rc != 0
+        - ansible_os_family == 'Suse'
+
+    # ==================== ENSURE DIRECTORIES ====================
+    - name: Ensure rsyslog.d directory exists
+      file:
+        path: /etc/rsyslog.d
+        state: directory
+        mode: '0755'
+      failed_when: false
+
+    - name: Ensure audit rules directory exists
+      file:
+        path: /etc/audit/rules.d
+        state: directory
+        mode: '0750'
+      failed_when: false
+
+    - name: Ensure logrotate.d directory exists
+      file:
+        path: /etc/logrotate.d
+        state: directory
+        mode: '0755'
+      failed_when: false
+
+    # ==================== SUMMARY ====================
+    - name: Check final state
+      shell: |
+        echo "rsyslog: $(command -v rsyslogd >/dev/null && echo 'installed' || echo 'not installed')"
+        echo "auditd: $(command -v auditctl >/dev/null && echo 'installed' || echo 'not installed')"
+        echo "logrotate: $(command -v logrotate >/dev/null && echo 'installed' || echo 'not installed')"
+      register: final_state
+      changed_when: false
+
+    - name: Display installation status
+      debug:
+        msg: "{{ final_state.stdout_lines }}"

@@ -1,19 +1,15 @@
-#!/bin/bash
+#!/bin/sh
 #
 # blue-sweet-tooth Shell - Logs all commands and prevents escape
 #
 
 # Configuration
-LOG_FILE="/var/log/blue-sweet-tooth/commands.log"
-LOG_DIR="/var/log/blue-sweet-tooth"
+LOG_FILE="/var/log/honeypot.log"
+LOG_DIR="/var/log"
 FAKE_HOSTNAME="${HOSTNAME:-localhost}"
 
-# Create log directory if it doesn't exist (requires appropriate permissions)
-if [[ ! -d "$LOG_DIR" ]]; then
-    mkdir -p "$LOG_DIR" 2>/dev/null
-fi
-
 # Ensure log file exists and is writable
+# Note: Log file should be created by deployment with proper permissions (666)
 touch "$LOG_FILE" 2>/dev/null
 
 # Function to log commands with metadata
@@ -21,8 +17,8 @@ log_command() {
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
     local user="${USER:-unknown}"
     local ip="${SSH_CLIENT%% *}"
-    [[ -z "$ip" ]] && ip="${SSH_CONNECTION%% *}"
-    [[ -z "$ip" ]] && ip="local"
+    [ -z "$ip" ] && ip="${SSH_CONNECTION%% *}"
+    [ -z "$ip" ] && ip="local"
     
     echo "$timestamp | USER=$user | IP=$ip | PWD=$PWD | CMD=$*" >> "$LOG_FILE" 2>/dev/null
 }
@@ -93,10 +89,10 @@ while true; do
             exit 0
         }
     fi
-    
+
     # Skip empty commands
-    [[ -z "$command" ]] && continue
-    
+    [ -z "$command" ] && continue
+
     # Log the command
     log_command "$command"
     

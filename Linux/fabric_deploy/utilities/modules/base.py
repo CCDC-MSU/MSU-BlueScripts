@@ -10,6 +10,7 @@ from fabric import Connection
 
 from ..models import ServerInfo
 from ..discovery import OSFamily, CommandResult
+from ..utils import retry_on_connection_failure
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +110,7 @@ class HardeningModule(ABC):
         """Check if this module is applicable to the system"""
         return True
     
+    @retry_on_connection_failure(max_retries=3, delay=2)
     def _run_command(self, command: str, use_sudo: bool = False) -> CommandResult:
         """Run a command with optional sudo"""
         if use_sudo and self.conn.user != 'root':
@@ -358,10 +360,11 @@ class HardeningModule(ABC):
             return []
         
         actions = self.get_actions()
+        module_name = self.get_name()
         
         for action in actions:
             if dry_run:
-                logger.info(f"[DRY RUN] Would execute: {action.description}")
+                logger.info(f"[{module_name}] [DRY RUN] {action.description}")
                 # Create appropriate command representation for dry run
                 if isinstance(action, CommandAction):
                     command_repr = action.command
@@ -377,16 +380,16 @@ class HardeningModule(ABC):
                     output="DRY RUN - not executed"
                 ))
             else:
-                logger.info(f"Applying: {action.description}")
                 result = self.apply_action(action)
                 self.results.append(result)
                 
                 if result.success:
                     if result.already_applied:
-                        logger.info(f"  ✓ Already applied")
+                        logger.info(f"[{module_name}] {action.description} → ✓ (already applied)")
                     else:
-                        logger.info(f"  ✓ Success")
+                        logger.info(f"[{module_name}] {action.description} → ✓")
                 else:
-                    logger.error(f"  ✗ Failed: {result.error}")
+                    error_msg = result.error or "Unknown error"
+                    logger.error(f"[{module_name}] {action.description} → ✗ {error_msg}")
         
         return self.results

@@ -1,0 +1,86 @@
+---
+# Install auditd across different distributions
+
+- name: Check if auditd is installed
+  command: command -v auditctl
+  register: auditd_check
+  changed_when: false
+  failed_when: false
+
+- name: Install auditd (Debian/Ubuntu)
+  apt:
+    name: auditd
+    state: present
+    update_cache: yes
+  when:
+    - auditd_check.rc != 0
+    - ansible_os_family == 'Debian'
+
+- name: Install auditd (RedHat/CentOS/Fedora)
+  dnf:
+    name: audit
+    state: present
+  when:
+    - auditd_check.rc != 0
+    - ansible_os_family == 'RedHat'
+
+- name: Install auditd (Alpine)
+  apk:
+    name: audit
+    state: present
+    update_cache: yes
+  when:
+    - auditd_check.rc != 0
+    - ansible_os_family == 'Alpine'
+
+- name: Install auditd (Arch)
+  community.general.pacman:
+    name: audit
+    state: present
+    update_cache: yes
+  when:
+    - auditd_check.rc != 0
+    - ansible_os_family == 'Archlinux'
+
+- name: Install auditd (openSUSE)
+  community.general.zypper:
+    name: audit
+    state: present
+  when:
+    - auditd_check.rc != 0
+    - ansible_os_family == 'Suse'
+
+- name: Install auditd (Gentoo)
+  portage:
+    name: sys-process/audit
+    state: present
+  when:
+    - auditd_check.rc != 0
+    - ansible_os_family == 'Gentoo'
+
+- name: Install auditd (Slackware)
+  block:
+    - name: Check for sbopkg
+      command: command -v sbopkg
+      register: sbopkg_check
+      changed_when: false
+      failed_when: false
+
+    - name: Install audit via sbopkg
+      command: sbopkg -B -e -i audit
+      when: sbopkg_check.rc == 0
+      register: slack_audit
+
+    - name: Warn if audit not available on Slackware
+      debug:
+        msg: "audit not available on Slackware - skipping"
+      when: sbopkg_check.rc != 0
+  when:
+    - auditd_check.rc != 0
+    - ansible_distribution == 'Slackware'
+
+- name: Enable auditd service
+  service:
+    name: auditd
+    enabled: yes
+  failed_when: false

@@ -1,16 +1,16 @@
 # Fabric Deployment Configuration
 
-# Fabric Deployment Configuration
-
 # Default Scripts
 # These scripts will run if no scripts are specified in the command line
 default_scripts:
-  - "all/archive_ssh_keys.sh"
-  - "all/pre-hardening-snapshot.sh"
+  - "all/pam_audit.sh"
+  - "all/archive_cronjobs.sh"
   - "all/fix-file-permissions.sh"
   - "all/check-go-binaries.sh"
   - "all/environment-variables-scanner.sh"
   - "all/systemd-hunting.sh"
   - "all/user-profiles-compiler.sh"
   - "all/search-pii.sh"
+  - "all/secure-php.sh"
+  - "all/find_media.sh"
 

@@ -12,6 +12,12 @@ class ServerCredentials:
     password: Optional[str] = None
     key_file: Optional[str] = None
     port: int = 22
+    friendly_name: Optional[str] = None
+
+    @property
+    def display_name(self) -> str:
+        """Return friendly name if available, otherwise host"""
+        return self.friendly_name if self.friendly_name else self.host
 
 
 @dataclass
@@ -24,6 +30,7 @@ class UserInfo:
     shell: str
     valid_shell: bool
     requires_password_change: bool = False  # True if user has a password hash (not * or !)
+    had_key: bool = False  # True if user had SSH keys in authorized_keys (potential red team target)
 
     @property
     def is_regular_user(self) -> bool:
@@ -85,6 +92,7 @@ class ServerInfo:
 
     # OS Information
     os: OSInfo = field(default_factory=OSInfo)
+    init_system: str = 'unknown'
     package_managers: List[str] = field(default_factory=list)
 
     # User Information  
@@ -120,6 +128,9 @@ class ServerInfo:
     # Discovery Status
     discovery_successful: bool = False
     discovery_errors: List[str] = field(default_factory=list)
+    
+    # State flags
+    safe_to_reboot: bool = False
 
     @property
     def regular_users(self) -> List[UserInfo]:
@@ -197,6 +208,8 @@ class ServerInfo:
         os_line = f"{self.os.distro} {self.os.version} ({self.os.architecture})"
         if self.os.kernel and self.os.kernel != "unknown":
             os_line += f" | kernel {self.os.kernel}"
+        if self.init_system and self.init_system != "unknown":
+            os_line += f" | init: {self.init_system}"
 
         # Users
         regular_names = sorted(self.regular_usernames)

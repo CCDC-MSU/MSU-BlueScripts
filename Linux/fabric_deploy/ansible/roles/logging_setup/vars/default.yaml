@@ -1,0 +1,15 @@
+---
+# Default variables for logging_setup role
+
+rsyslog_package: rsyslog
+auditd_package: auditd
+
+# Service names
+rsyslog_service: rsyslog
+auditd_service: auditd
+
+# Paths
+rsyslog_conf_dir: /etc/rsyslog.d
+audit_rules_dir: /etc/audit/rules.d
+journald_conf_dir: /etc/systemd/journald.conf.d
+logrotate_conf_dir: /etc/logrotate.d

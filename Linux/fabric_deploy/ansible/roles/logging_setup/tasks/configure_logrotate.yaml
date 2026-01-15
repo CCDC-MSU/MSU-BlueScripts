@@ -1,0 +1,60 @@
+---
+# Configure logrotate for security logs
+
+- name: Check if logrotate is available
+  command: command -v logrotate
+  register: logrotate_check
+  changed_when: false
+  failed_when: false
+
+- name: Install logrotate if missing (Debian)
+  apt:
+    name: logrotate
+    state: present
+  when:
+    - logrotate_check.rc != 0
+    - ansible_os_family == 'Debian'
+
+- name: Install logrotate if missing (RedHat)
+  dnf:
+    name: logrotate
+    state: present
+  when:
+    - logrotate_check.rc != 0
+    - ansible_os_family == 'RedHat'
+
+- name: Install logrotate if missing (Alpine)
+  apk:
+    name: logrotate
+    state: present
+  when:
+    - logrotate_check.rc != 0
+    - ansible_os_family == 'Alpine'
+
+- name: Install logrotate if missing (Arch)
+  community.general.pacman:
+    name: logrotate
+    state: present
+  when:
+    - logrotate_check.rc != 0
+    - ansible_os_family == 'Archlinux'
+
+- name: Install logrotate if missing (openSUSE)
+  community.general.zypper:
+    name: logrotate
+    state: present
+  when:
+    - logrotate_check.rc != 0
+    - ansible_os_family == 'Suse'
+
+- name: Ensure logrotate.d directory exists
+  file:
+    path: /etc/logrotate.d
+    state: directory
+    mode: '0755'
+
+- name: Deploy CCDC logrotate configuration
+  template:
+    src: logrotate-ccdc.conf.j2
+    dest: /etc/logrotate.d/ccdc-security
+    mode: '0644'
