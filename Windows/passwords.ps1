@@ -1,5 +1,5 @@
 $excludedGroups = @()
-$excludedUsers = @()
+$excludedUsers = @("dd-agent", "dd-dog", "whiteteam", "datadog")
 
 function Generate-RandomPassword {
     $length = 12
