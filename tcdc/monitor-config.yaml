@@ -1,0 +1,54 @@
+team_id: 4
+interval: 10           # seconds between checks
+log_level: info        # debug | info | production
+log_file: monitor.log  # timestamped log output (no ANSI colors)
+alert_sound: true      # terminal bell on UP->DOWN transitions
+
+services:
+  centurytree:
+    host: 10.66.4.11
+    checks:
+      http:
+        port: 80
+        path: "/search?q=Smith"
+        expect: "<table"
+
+  aggiedrop-ftp:
+    host: 10.66.4.12
+    checks:
+      ftp:
+        port: 21
+        user: checker
+        password: "Checker2026!"
+
+  aggiedrop-helper:
+    host: 10.66.4.12
+    checks:
+      helper:
+        port: 9999
+
+  bonfire:
+    host: 10.66.4.13
+    checks:
+      http:
+        port: 80
+        path: "/"
+        expect: "Bonfire"
+
+  reveille-remote:
+    host: 10.66.4.14
+    checks:
+      ssh:
+        port: 22
+        user: checker
+        password: "Checker2026!"
+
+  excel:
+    host: 10.66.4.15
+    checks:
+      postgres:
+        port: 5432
+        user: directory_app
+        password: "directorysearch2026"
+        dbname: directory_search
+        query: "SELECT COUNT(*) FROM people"

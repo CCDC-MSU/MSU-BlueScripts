@@ -1,0 +1,4 @@
+requests
+paramiko
+psycopg2-binary
+pyyaml
